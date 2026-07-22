@@ -1,0 +1,20 @@
+# Xcode / build output
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+**/xcshareddata/WorkspaceSettings.xcsettings
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# macOS
+.DS_Store
+
+# Misc
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.moved-aside
