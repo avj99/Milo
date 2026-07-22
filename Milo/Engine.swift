@@ -2,38 +2,82 @@ import Foundation
 
 // MARK: - Calorie engine
 //
-// Daily targets come from standard veterinary formulas (Merck Veterinary Manual):
-//   RER = 70 × (ideal kg)^0.75              — exponential, valid at any weight
-//   RER = (30 × ideal kg) + 70              — linear, valid ~2–45 kg
-//   MER = RER × life-stage/activity factor  — the daily target
+// Peer-reviewed veterinary formulas (NRC 2006 · FEDIAF · Merck Veterinary Manual):
 //
-// We use IDEAL weight, treat the result as an estimate (individual dogs vary by
-// 20%+), and never present it as a medical prescription.
+//   RER  = 70 × (kg)^0.75                          resting energy, any weight
+//   Adult MER = RER(ideal weight) × life-stage factor
+//   Puppy MER = 130 × (kg)^0.75 × 3.2 × (e^(−0.87·p) − 0.1)      NRC growth eq,
+//               p = current weight ÷ expected adult weight
+//
+// The adult path uses IDEAL weight (refined by body-condition score, which is a
+// more reliable signal than breed). The puppy path uses CURRENT weight and the
+// breed's expected adult weight, because a growing dog must NOT be fed on an
+// adult formula. Everything is presented as an estimate, never a prescription.
+
+/// Result of a calorie calculation, with the method used and safety caveats to
+/// surface in the UI so we never lead an owner down the wrong path.
+struct CalorieResult {
+    enum Method { case adult, puppyGrowth }
+    var kcal: Int
+    var method: Method
+    var idealWeightKg: Double
+    var caveats: [String]
+}
 
 enum CalorieEngine {
 
-    /// Resting energy requirement, kcal/day.
-    static func rer(idealWeightKg kg: Double) -> Double {
-        // Prefer the linear form in its valid band; fall back to exponential.
-        if kg >= 2 && kg <= 45 {
-            return 30 * kg + 70
+    /// Resting energy requirement (kcal/day). The exponential form is valid at
+    /// any weight, so we use it consistently (the linear form is only an
+    /// approximation for 2–45 kg).
+    static func rer(kg: Double) -> Double { 70 * pow(max(0.1, kg), 0.75) }
+
+    /// Adult life-stage/activity factor, nudged by body condition toward weight
+    /// management for heavier dogs.
+    static func adultFactor(for dog: Dog) -> Double {
+        var f = dog.lifeStage.factor
+        switch dog.bodyCondition {
+        case .obese:      f = min(f, 1.2)
+        case .overweight: f = min(f, 1.4)
+        default:          break
         }
-        return 70 * pow(kg, 0.75)
+        return f
     }
 
-    /// Maintenance energy requirement (the daily target), rounded to nearest 10.
-    static func dailyTarget(for dog: Dog) -> Int {
-        var factor = dog.lifeStage.factor
-        // Body condition nudges the factor: heavier dogs trend toward the
-        // weight-management end. This is a gentle default, not a vet's plan.
-        switch dog.bodyCondition {
-        case .obese:       factor = min(factor, 1.2)
-        case .overweight:  factor = min(factor, 1.4)
-        default:           break
+    /// The full result — decides puppy vs adult from age + the breed's maturity.
+    static func result(for dog: Dog) -> CalorieResult {
+        let breed = BreedCatalog.find(dog.breed)
+        let maturity = breed?.size.maturityMonths ?? 12
+
+        if dog.ageMonths < maturity {
+            // Puppy growth curve (NRC 2006). Needs an expected adult weight;
+            // the breed midpoint is the best estimate, else a gentle guess.
+            let adult = max(dog.weightKg,
+                            breed?.midKg ?? (dog.idealWeightKg > 0 ? dog.idealWeightKg : dog.weightKg * 2))
+            let p = min(1, max(0.05, dog.weightKg / adult))
+            let mer = 130 * pow(max(0.1, dog.weightKg), 0.75) * 3.2 * (exp(-0.87 * p) - 0.1)
+            var caveats = ["Growing puppies' needs change fast — recheck every few weeks and confirm portions with your vet."]
+            if breed == nil {
+                caveats.append("Add a breed for a more accurate growth estimate.")
+            }
+            return CalorieResult(kcal: round10(mer), method: .puppyGrowth,
+                                 idealWeightKg: adult, caveats: caveats)
         }
-        let mer = rer(idealWeightKg: dog.idealWeightKg) * factor
-        return Int((mer / 10).rounded()) * 10
+
+        // Adult maintenance, using ideal (target) weight.
+        let ideal = dog.idealWeightKg > 0 ? dog.idealWeightKg : (breed?.midKg ?? dog.weightKg)
+        let kcal = round10(rer(kg: ideal) * adultFactor(for: dog))
+        var caveats = ["An estimate to start from — individual dogs vary 20%+. Fine-tune with your vet."]
+        if dog.bodyCondition == .overweight || dog.bodyCondition == .obese {
+            caveats.append("Body condition suggests overweight — this targets the ideal weight. Aim for gradual loss with your vet, not a crash diet.")
+        } else if dog.bodyCondition == .veryLean {
+            caveats.append("Body condition looks lean — check with your vet whether to feed toward a little more.")
+        }
+        return CalorieResult(kcal: kcal, method: .adult, idealWeightKg: ideal, caveats: caveats)
     }
+
+    static func dailyTarget(for dog: Dog) -> Int { result(for: dog).kcal }
+
+    static func round10(_ x: Double) -> Int { max(0, Int((x / 10).rounded()) * 10) }
 }
 
 // MARK: - Allergen engine

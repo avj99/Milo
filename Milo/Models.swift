@@ -138,10 +138,12 @@ struct Dog: Identifiable, Hashable, Codable {
     var emoji: String
     var avatar: [UInt]           // gradient pair (hex) for the avatar tile
     var breed: String
-    var ageYears: Int
+    /// Age in months — kept in months so the calorie engine can tell a growing
+    /// puppy (which needs a different formula) from an adult.
+    var ageMonths: Int
     /// Current weight in kg.
     var weightKg: Double
-    /// Ideal / target weight used by the calorie formula.
+    /// Ideal / target weight used by the adult calorie formula.
     var idealWeightKg: Double
     var bodyCondition: BodyCondition
     var lifeStage: LifeStage
@@ -152,14 +154,22 @@ struct Dog: Identifiable, Hashable, Codable {
     var targetOverride: Int?
 
     init(id: UUID = UUID(), name: String, emoji: String, avatar: [UInt],
-         breed: String, ageYears: Int, weightKg: Double, idealWeightKg: Double,
+         breed: String, ageMonths: Int, weightKg: Double, idealWeightKg: Double,
          bodyCondition: BodyCondition, lifeStage: LifeStage, allergens: [Allergen],
          targetOverride: Int? = nil) {
         self.id = id; self.name = name; self.emoji = emoji; self.avatar = avatar
-        self.breed = breed; self.ageYears = ageYears; self.weightKg = weightKg
+        self.breed = breed; self.ageMonths = ageMonths; self.weightKg = weightKg
         self.idealWeightKg = idealWeightKg; self.bodyCondition = bodyCondition
         self.lifeStage = lifeStage; self.allergens = allergens
         self.targetOverride = targetOverride
+    }
+
+    var ageYears: Int { ageMonths / 12 }
+
+    var ageText: String {
+        if ageMonths < 12 { return "\(ageMonths) mo" }
+        let y = ageMonths / 12, m = ageMonths % 12
+        return m == 0 ? "\(y) yr" : "\(y) yr \(m) mo"
     }
 
     var avatarGradient: LinearGradient {
@@ -167,10 +177,16 @@ struct Dog: Identifiable, Hashable, Codable {
                        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
-    /// Daily calorie target (MER), rounded to a tidy number.
+    /// Daily calorie target, rounded. Uses the engine unless a target was set.
     var dailyTarget: Int { targetOverride ?? CalorieEngine.dailyTarget(for: self) }
 
-    var subtitle: String { "\(breed) · \(ageYears) yr · \(Int(weightKg)) kg" }
+    /// True while the dog is still on the puppy growth curve (breed-aware).
+    var isGrowing: Bool {
+        let maturity = BreedCatalog.find(breed)?.size.maturityMonths ?? 12
+        return ageMonths < maturity
+    }
+
+    var subtitle: String { "\(breed) · \(ageText) · \(Int(weightKg)) kg" }
 }
 
 // MARK: - Product

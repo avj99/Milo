@@ -142,8 +142,12 @@ struct OnboardingView: View {
         guard let raw = ProcessInfo.processInfo.environment["MILO_OB_STEP"],
               let n = Int(raw) else { return }
         m.dogName = "Bella"
-        m.breed = "Labrador Retriever"; m.breedSize = "Large · ~30 kg"
+        if let lab = BreedCatalog.find("Labrador Retriever") { m.selectBreed(lab) }
         m.allergens = ["Chicken"]
+        if let a = ProcessInfo.processInfo.environment["MILO_OB_AGE"], let mo = Int(a) {
+            m.ageMonths = mo
+            if mo < 18 { m.weightKg = 12 }   // a plausible growing weight
+        }
         let focusEnv = ProcessInfo.processInfo.environment["MILO_OB_FOCUS"]
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 60_000_000)
@@ -547,12 +551,12 @@ struct OnboardingView: View {
                 .padding(.bottom, 14)
             mixedBreedRow.padding(.bottom, 12)
             VStack(spacing: 0) {
-                ForEach(Array(m.filteredBreeds.enumerated()), id: \.element.name) { idx, b in
-                    Button { m.breed = b.name; m.breedSize = b.size } label: {
+                ForEach(Array(m.breedResults.enumerated()), id: \.element.name) { idx, b in
+                    Button { m.selectBreed(b) } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(b.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Theme.ink)
-                                Text(b.size).font(.system(size: 12)).foregroundStyle(muted2)
+                                Text(b.summary).font(.system(size: 12)).foregroundStyle(muted2)
                             }
                             Spacer(minLength: 0)
                             if m.breed == b.name {
@@ -572,7 +576,7 @@ struct OnboardingView: View {
 
     private var mixedBreedRow: some View {
         let sel = m.breed == "Mixed / unknown"
-        return Button { m.breed = "Mixed / unknown"; m.breedSize = "" } label: {
+        return Button { m.selectMixed() } label: {
             HStack(spacing: 12) {
                 Image(systemName: "shuffle").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.brand)
                     .frame(width: 38, height: 38).background(Color(hex: 0xE8F0EC))
@@ -890,12 +894,20 @@ struct OnboardingView: View {
     // MARK: - 9 Reveal
 
     private func revealStep(_ w: CGFloat) -> some View {
-        let target = m.targetKcal()
+        let result = m.calorieResult()
+        let target = result.kcal
         let shown = Int((Double(target) * revealProgress / 10).rounded()) * 10
         return VStack(spacing: 0) {
             Text("\(m.dogDisplayName)'s daily target".uppercased())
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(hex: 0xB98526))
                 .kerning(1).frame(maxWidth: .infinity)
+            if result.method == .puppyGrowth {
+                Text("🐾 Growing puppy")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.accentDeep)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Theme.accentSoft).clipShape(Capsule())
+                    .padding(.top, 8)
+            }
             Spacer()
             ZStack {
                 Circle().stroke(Theme.accent.opacity(0.16), lineWidth: 22)
@@ -910,7 +922,7 @@ struct OnboardingView: View {
             }
             .frame(width: 250, height: 250)
             Spacer()
-            Text("An estimate to start from — you can fine-tune it anytime as you learn what keeps \(m.dogDisplayName) at their best.")
+            Text(result.caveats.first ?? "An estimate to start from — fine-tune it with your vet.")
                 .font(.system(size: 16)).foregroundStyle(Color(hex: 0x4A5751))
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 18)

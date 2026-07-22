@@ -123,9 +123,10 @@ struct CalorieRing: View {
             .frame(width: 216, height: 216)
             .padding(.top, 6)
 
-            Text("Target is an estimate — dogs vary by 20%+. Adjust with your vet.")
+            Text(CalorieEngine.result(for: dog).caveats.first
+                 ?? "Target is an estimate — adjust with your vet.")
                 .font(.milo(11, .semibold))
-                .foregroundStyle(Theme.muted)
+                .foregroundStyle(dog.isGrowing ? Theme.accentDeep : Theme.muted)
                 .multilineTextAlignment(.center)
                 .padding(.top, 12)
                 .padding(.horizontal, 30)

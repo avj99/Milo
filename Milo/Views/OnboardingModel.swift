@@ -33,17 +33,7 @@ final class OnboardingModel: ObservableObject {
     @Published var breedQuery = ""
     @Published var allergenQuery = ""
 
-    // MARK: Reference data (from the design)
-
-    let breeds: [(name: String, size: String)] = [
-        ("Labrador Retriever", "Large · ~30 kg"), ("Golden Retriever", "Large · ~29 kg"),
-        ("French Bulldog", "Small · ~12 kg"), ("German Shepherd", "Large · ~34 kg"),
-        ("Poodle (Standard)", "Medium · ~22 kg"), ("Beagle", "Small · ~11 kg"),
-        ("Dachshund", "Small · ~8 kg"), ("Border Collie", "Medium · ~18 kg"),
-        ("Shih Tzu", "Small · ~6 kg"), ("Boxer", "Large · ~30 kg"),
-        ("Australian Shepherd", "Medium · ~24 kg"), ("Cavalier K.C. Spaniel", "Small · ~8 kg"),
-        ("Chihuahua", "Toy · ~3 kg"), ("Great Dane", "Giant · ~60 kg"), ("Corgi", "Small · ~13 kg"),
-    ]
+    // MARK: Reference data
 
     let allergenOptions = ["Chicken", "Beef", "Dairy", "Egg", "Wheat / grain", "Lamb",
                            "Fish", "Soy", "Pork", "Turkey", "Corn", "Peas"]
@@ -95,14 +85,11 @@ final class OnboardingModel: ObservableObject {
         return CGFloat((Double(step) / 9.0 * 100).rounded())
     }
 
-    /// The design's daily-target formula (kept exactly so the reveal matches).
-    func targetKcal() -> Int {
-        let rer = 70 * pow(max(1, weightKg), 0.75)
-        let nf = neutered ? 1.6 : 1.8
-        let af = [1.2, 1.5, 1.9][activity]
-        let bcsAdj = [1.15, 1.05, 1.0, 0.92, 0.85][bcs]
-        return Int((rer * nf * af * bcsAdj / 10).rounded()) * 10
-    }
+    /// Daily target from the peer-reviewed calorie engine (age-aware).
+    func targetKcal() -> Int { CalorieEngine.dailyTarget(for: draftDog()) }
+
+    /// Full result including the method used and safety caveats for the reveal.
+    func calorieResult() -> CalorieResult { CalorieEngine.result(for: draftDog()) }
 
     // MARK: Actions
 
@@ -125,9 +112,20 @@ final class OnboardingModel: ObservableObject {
         else { allergens.append(name) }
     }
 
-    var filteredBreeds: [(name: String, size: String)] {
-        let q = breedQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        return q.isEmpty ? breeds : breeds.filter { $0.name.lowercased().contains(q) }
+    /// Breed search results from the bundled peer-reviewed catalog.
+    var breedResults: [BreedInfo] { BreedCatalog.search(breedQuery) }
+
+    /// Selecting a breed pre-loads its typical adult weight, so the weight step
+    /// starts from a sensible, breed-based value the owner can adjust.
+    func selectBreed(_ info: BreedInfo) {
+        breed = info.name
+        breedSize = info.summary
+        weightKg = min(120, max(1, (info.midKg * 2).rounded() / 2))
+    }
+
+    func selectMixed() {
+        breed = "Mixed / unknown"
+        breedSize = ""
     }
 
     var suggestedAllergens: [String] {
@@ -153,7 +151,9 @@ final class OnboardingModel: ObservableObject {
         return base.trimmingCharacters(in: .whitespaces)
     }
 
-    func buildDog() -> Dog {
+    /// A Dog built from the current answers, WITHOUT a stored target (so the
+    /// engine computes live — used for the reveal calc).
+    func draftDog() -> Dog {
         let bodyMap: [BodyCondition] = [.veryLean, .lean, .ideal, .overweight, .obese]
         let bc = bodyMap[bcs]
 
@@ -163,7 +163,8 @@ final class OnboardingModel: ObservableObject {
         else if activity == 0 { stage = .proneToObesity }
         else { stage = .neuteredAdult }
 
-        // If the dog is carrying weight, nudge the ideal target below current.
+        // Body condition is the individual signal for ideal weight: nudge the
+        // target weight down for heavier dogs, up slightly for very lean ones.
         let idealFactor: Double = [1.05, 1.0, 1.0, 0.9, 0.82][bcs]
 
         let allergenObjs = allergens.map {
@@ -174,13 +175,21 @@ final class OnboardingModel: ObservableObject {
             name: dogDisplayName,
             emoji: "🐶",
             avatar: [0xF6D9A0, 0xEBB25E],
-            breed: breed ?? "Mixed breed",
-            ageYears: max(0, ageMonths / 12),
+            breed: breed ?? "Mixed / unknown",
+            ageMonths: max(0, ageMonths),
             weightKg: weightKg,
             idealWeightKg: (weightKg * idealFactor * 10).rounded() / 10,
             bodyCondition: bc,
             lifeStage: stage,
             allergens: allergenObjs,
-            targetOverride: targetKcal())
+            targetOverride: nil)
+    }
+
+    /// The final Dog, with the engine's target frozen in so the dashboard shows
+    /// the same number the owner saw at the reveal.
+    func buildDog() -> Dog {
+        var dog = draftDog()
+        dog.targetOverride = CalorieEngine.dailyTarget(for: dog)
+        return dog
     }
 }
