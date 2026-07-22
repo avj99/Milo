@@ -160,6 +160,22 @@ final class SupabaseService {
             credentials: .init(provider: .apple, idToken: idToken, nonce: nonce))
     }
 
+    // MARK: Auth (email + password)
+
+    /// Signs in an existing account.
+    func signIn(email: String, password: String) async throws {
+        try await client.auth.signIn(email: email, password: password)
+    }
+
+    /// Creates an account. If the project has "Confirm email" enabled the
+    /// returned session is nil until the user confirms; with it disabled the
+    /// user is signed in immediately.
+    @discardableResult
+    func signUp(email: String, password: String) async throws -> Bool {
+        let response = try await client.auth.signUp(email: email, password: password)
+        return response.session != nil     // true = signed in now
+    }
+
     func signOut() async throws { try await client.auth.signOut() }
 
     /// Deletes the user's own membership. App Store requires in-app account

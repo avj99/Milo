@@ -21,7 +21,49 @@ struct OnboardingView: View {
     @StateObject private var apple = AppleSignInCoordinator()
     @State private var authError: String?
 
+    // Email auth
+    @State private var showEmailSheet = false
+    @State private var emailInput = ""
+    @State private var passwordInput = ""
+    @State private var emailIsSignUp = true
+    @State private var emailBusy = false
+    @State private var emailError: String?
+
     private let muted2 = Color(hex: 0x98A29B)
+
+    /// Email + password auth, then advance into the flow.
+    private func authenticateEmail() {
+        let email = emailInput.trimmingCharacters(in: .whitespaces).lowercased()
+        guard email.contains("@"), email.contains("."), passwordInput.count >= 6 else {
+            emailError = "Enter a valid email and a password of at least 6 characters."
+            return
+        }
+        emailError = nil
+        emailBusy = true
+        Task {
+            defer { emailBusy = false }
+            do {
+                #if canImport(Supabase)
+                if emailIsSignUp {
+                    let signedIn = try await SupabaseService.shared.signUp(email: email, password: passwordInput)
+                    if !signedIn {
+                        emailError = "Account created — check your email to confirm, then sign in."
+                        emailIsSignUp = false
+                        return
+                    }
+                } else {
+                    try await SupabaseService.shared.signIn(email: email, password: passwordInput)
+                }
+                #endif
+                store.updateCurrentUser(name: String(email.prefix(while: { $0 != "@" })).capitalized)
+                showEmailSheet = false
+                m.mode = .new
+                m.go(1)
+            } catch {
+                emailError = "Couldn't \(emailIsSignUp ? "create account" : "sign in"). Check your details and try again."
+            }
+        }
+    }
 
     /// Runs Sign in with Apple, then advances into the flow. On success we adopt
     /// the Apple display name and (once the SDK is added) sign into Supabase.
@@ -264,6 +306,17 @@ struct OnboardingView: View {
                 .padding(.top, 40)
             Spacer()
             VStack(spacing: 12) {
+                Button { emailIsSignUp = true; emailError = nil; showEmailSheet = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "envelope.fill").font(.system(size: 16, weight: .medium))
+                        Text("Continue with email").font(.system(size: 17, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).frame(height: 56)
+                    .background(Theme.brand)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }.buttonStyle(PressStyle())
+
                 Button { authenticate(.new) } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "applelogo").font(.system(size: 18, weight: .medium))
@@ -276,8 +329,8 @@ struct OnboardingView: View {
                 }.buttonStyle(PressStyle())
 
                 Button { authenticate(.join) } label: {
-                    Text("I have an invite code").font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Theme.brand).frame(maxWidth: .infinity).frame(height: 56)
+                    Text("I have an invite code").font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.brand).frame(maxWidth: .infinity).frame(height: 44)
                 }
 
                 if let authError {
@@ -288,6 +341,65 @@ struct OnboardingView: View {
         }
         .padding(.horizontal, 30).padding(.top, 60).padding(.bottom, 40)
         .frame(maxWidth: .infinity)
+        .sheet(isPresented: $showEmailSheet) { emailAuthSheet }
+    }
+
+    private var emailAuthSheet: some View {
+        VStack(spacing: 16) {
+            Capsule().fill(Theme.line).frame(width: 40, height: 5).padding(.top, 10)
+
+            Text(emailIsSignUp ? "Create your account" : "Welcome back")
+                .font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
+                .padding(.top, 8)
+
+            Picker("", selection: $emailIsSignUp) {
+                Text("Create account").tag(true)
+                Text("Sign in").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: emailIsSignUp) { _, _ in emailError = nil }
+
+            VStack(spacing: 10) {
+                TextField("Email", text: $emailInput)
+                    .textContentType(.emailAddress)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(14).background(Theme.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line, lineWidth: 1))
+
+                SecureField("Password (6+ characters)", text: $passwordInput)
+                    .textContentType(emailIsSignUp ? .newPassword : .password)
+                    .padding(14).background(Theme.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line, lineWidth: 1))
+            }
+
+            if let emailError {
+                Text(emailError).font(.system(size: 13)).foregroundStyle(Theme.alert)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button { authenticateEmail() } label: {
+                ZStack {
+                    Text(emailIsSignUp ? "Create account" : "Sign in").opacity(emailBusy ? 0 : 1)
+                    if emailBusy { ProgressView().tint(.white) }
+                }
+                .font(.system(size: 17, weight: .semibold)).foregroundStyle(.white)
+                .frame(maxWidth: .infinity).frame(height: 54)
+                .background(Theme.brand)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(PressStyle())
+            .disabled(emailBusy)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .background(Theme.bg)
+        .presentationDetents([.height(420)])
+        .presentationDragIndicator(.hidden)
     }
 
     private var logo: some View {
