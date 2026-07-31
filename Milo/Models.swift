@@ -192,13 +192,57 @@ struct Dog: Identifiable, Hashable, Codable {
 // MARK: - Product
 
 enum FoodCategory: String, CaseIterable, Identifiable, Codable {
-    case meal, treat, addIn
+    case kibble, wet, treat, meat, fish, vegetable, fruit, dairy, grain, supplement, other
     var id: String { rawValue }
+
     var label: String {
         switch self {
-        case .meal:  return "Meal"
-        case .treat: return "Treat"
-        case .addIn: return "Human add-in"
+        case .kibble:     return "Kibble"
+        case .wet:        return "Wet food"
+        case .treat:      return "Treat"
+        case .meat:       return "Meat"
+        case .fish:       return "Fish"
+        case .vegetable:  return "Vegetable"
+        case .fruit:      return "Fruit"
+        case .dairy:      return "Dairy & egg"
+        case .grain:      return "Grains"
+        case .supplement: return "Supplement"
+        case .other:      return "Other"
+        }
+    }
+
+    var emoji: String {
+        switch self {
+        case .kibble:     return "🥣"
+        case .wet:        return "🥫"
+        case .treat:      return "🦴"
+        case .meat:       return "🥩"
+        case .fish:       return "🐟"
+        case .vegetable:  return "🥕"
+        case .fruit:      return "🍎"
+        case .dairy:      return "🥚"
+        case .grain:      return "🍚"
+        case .supplement: return "💊"
+        case .other:      return "🍽️"
+        }
+    }
+
+    /// Kibble and wet food are the planned meals; everything else counts
+    /// toward the treats/extras share of the day.
+    var isMainMeal: Bool { self == .kibble || self == .wet }
+
+    /// Decodes legacy values ("meal", "addIn") from old saved stores and old
+    /// cloud rows, so nothing breaks when the taxonomy grows.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = FoodCategory(legacy: raw)
+    }
+
+    init(legacy raw: String) {
+        switch raw {
+        case "meal":  self = .kibble
+        case "addIn": self = .other
+        default:      self = FoodCategory(rawValue: raw) ?? .other
         }
     }
 }
@@ -220,14 +264,26 @@ struct Product: Identifiable, Hashable, Codable {
     var verified: Bool
     /// Human add-ins / photo estimates are shown as ranges, not false precision.
     var isEstimate: Bool
+    /// Grams per one `portionBasis` unit for the guaranteed-analysis panel
+    /// (crude protein, crude fat, crude fiber, moisture) — from the label or a
+    /// nutrition estimate. Optional — older entries and quick adds may not
+    /// have them; daily math treats missing as 0 (under-report, never invent).
+    var proteinGPerUnit: Double?
+    var fatGPerUnit: Double?
+    var fiberGPerUnit: Double?
+    var moistureGPerUnit: Double?
 
     init(id: UUID = UUID(), name: String, brand: String, emoji: String,
          category: FoodCategory, kcalPerUnit: Int, portionBasis: String,
-         ingredients: [String], verified: Bool = true, isEstimate: Bool = false) {
+         ingredients: [String], verified: Bool = true, isEstimate: Bool = false,
+         proteinGPerUnit: Double? = nil, fatGPerUnit: Double? = nil,
+         fiberGPerUnit: Double? = nil, moistureGPerUnit: Double? = nil) {
         self.id = id; self.name = name; self.brand = brand; self.emoji = emoji
         self.category = category; self.kcalPerUnit = kcalPerUnit
         self.portionBasis = portionBasis; self.ingredients = ingredients
         self.verified = verified; self.isEstimate = isEstimate
+        self.proteinGPerUnit = proteinGPerUnit; self.fatGPerUnit = fatGPerUnit
+        self.fiberGPerUnit = fiberGPerUnit; self.moistureGPerUnit = moistureGPerUnit
     }
 }
 

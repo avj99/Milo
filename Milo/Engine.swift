@@ -78,6 +78,27 @@ enum CalorieEngine {
     static func dailyTarget(for dog: Dog) -> Int { result(for: dog).kcal }
 
     static func round10(_ x: Double) -> Int { max(0, Int((x / 10).rounded()) * 10) }
+
+    // MARK: Protein & fat targets
+    //
+    // AAFCO Dog Food Nutrient Profiles express minimums per 1000 kcal ME:
+    //   adult maintenance — crude protein 45.0 g, crude fat 13.8 g
+    //   growth/reproduction — crude protein 56.3 g, crude fat 21.3 g
+    // Scaling those by the dog's daily calorie target gives per-day gram
+    // minimums that stay consistent with the calorie engine. Deterministic on
+    // purpose: the AI estimates food facts, this computes the rings.
+
+    /// Minimum grams of protein per day for this dog (AAFCO, scaled to target).
+    static func proteinTargetG(for dog: Dog) -> Int {
+        let perMcal = dog.isGrowing ? 56.3 : 45.0
+        return Int((Double(dog.dailyTarget) / 1000 * perMcal).rounded())
+    }
+
+    /// Minimum grams of fat per day for this dog (AAFCO, scaled to target).
+    static func fatTargetG(for dog: Dog) -> Int {
+        let perMcal = dog.isGrowing ? 21.3 : 13.8
+        return Int((Double(dog.dailyTarget) / 1000 * perMcal).rounded())
+    }
 }
 
 // MARK: - Allergen engine
