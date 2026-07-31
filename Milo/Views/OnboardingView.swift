@@ -446,7 +446,7 @@ struct OnboardingView: View {
                     .font(.system(size: 13)).foregroundStyle(muted2)
                     .padding(.leading, 4).padding(.top, 16)
             } else {
-                title("Enter your invite code", "Ask a household member for the 6-digit code from their Milo app.")
+                title("Enter your invite code", "Ask a household member for the 6-character code from their Milo app.")
                     .padding(.bottom, 30)
                 codeBoxes
                 if m.inviteCode.count == 6 {
@@ -461,8 +461,11 @@ struct OnboardingView: View {
         ZStack {
             TextField("", text: Binding(
                 get: { m.inviteCode },
-                set: { m.inviteCode = String($0.filter(\.isNumber).prefix(6)) }))
-                .keyboardType(.numberPad)
+                set: { m.inviteCode = String($0.uppercased()
+                    .filter { $0.isLetter || $0.isNumber }.prefix(6)) }))
+                .keyboardType(.asciiCapable)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
                 .focused($focus, equals: .code)
                 .foregroundStyle(.clear).tint(.clear)
                 .accentColor(.clear)
