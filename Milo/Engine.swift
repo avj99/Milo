@@ -112,6 +112,12 @@ enum CalorieEngine {
 
 enum AllergenEngine {
 
+    /// The fixed canonical allergen vocabulary Milo tracks. Both the synonym map
+    /// and the on-device AI fallback resolve to exactly these ten.
+    static let canonicalAllergens: Set<String> = [
+        "chicken", "beef", "dairy", "wheat", "egg", "soy", "fish", "lamb", "pork", "corn",
+    ]
+
     /// Surface ingredient term → canonical allergen. In the real app this is
     /// backed by the AI normalization step; here it is a representative seed map.
     static let synonymMap: [String: String] = [
@@ -155,6 +161,18 @@ enum AllergenEngine {
             }
         }
         return canon
+    }
+
+    /// Ingredients the deterministic synonym map can't place at all — neither an
+    /// exact key nor a substring hit. Only these go to the on-device AI fallback
+    /// (`AppleAI.mapAllergens`); the map is always tried first.
+    static func unmatchedIngredients(_ ingredients: [String]) -> [String] {
+        ingredients.filter { raw in
+            let key = raw.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { return false }
+            if synonymMap[key] != nil { return false }
+            return !synonymMap.keys.contains { key.contains($0) }
+        }
     }
 
     /// The allergens in `product` that this specific `dog` reacts to.

@@ -178,7 +178,14 @@ enum NaturalFoodCatalog {
     /// Deterministic estimate for a natural food, if we know it.
     static func estimate(name: String, portion: String) -> Product? {
         guard let food = find(name) else { return nil }
-        let grams = grams(for: portion, of: food)
+        return product(for: food, grams: grams(for: portion, of: food), portion: portion)
+    }
+
+    /// Builds a Product from a known catalog food + a resolved gram weight. This
+    /// is where the per-100 g × grams arithmetic lives, so both the deterministic
+    /// path and the AI's `lookupNutrition`-grounded path get identical, Swift-
+    /// computed numbers (the model never multiplies).
+    static func product(for food: NaturalFood, grams: Double, portion: String) -> Product {
         let factor = grams / 100
         return Product(
             name: food.name.capitalized,
