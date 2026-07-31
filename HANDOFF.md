@@ -1,6 +1,6 @@
 # Milo — Engineering Handoff
 
-_Last updated: 2026-07-29_
+_Last updated: 2026-07-31_
 
 Milo is a native iOS (SwiftUI) app that helps households track everything their
 dogs eat — meals, treats, human add-ins — to manage calories and catch
@@ -246,6 +246,54 @@ to delete). Architecture: **AI estimates, engine calculates.**
   front + nutrition label are both attached (no "front first" nagging).
 - Simulator-verified: Fridge tab (grouped, counts, tab bar), dashboard rings
   (28/65 g protein, 14/20 g fat after a 380 kcal kibble log), live strip.
+
+### 3.9d Capture-accuracy pass (Apple on-device stack) — added 2026-07-31
+Four changes to make the capture pipeline more accurate, all Apple-only /
+on-device, keeping the hard rule **AI estimates, engine calculates** (the model
+never does arithmetic). Everything is availability-gated with graceful fallback.
+- **Table-aware label reading** (`LabelOCR.swift`): package capture now uses a
+  new `LabelOCR.read(_:)` reader. On **iOS 26** it runs Vision's
+  `RecognizeDocumentsRequest` so the guaranteed-analysis grid arrives as clean
+  `key | value` rows (`LabelReading.combinedText` prepends the serialized table
+  block before the transcript), and it first runs
+  `VNDetectDocumentSegmentationRequest` + `CIPerspectiveCorrection` to auto-crop
+  and flatten an angled label. Older OS versions fall back to the plain
+  `VNRecognizeTextRequest` path (still present, also used by the no-AI draft).
+- **Tool-calling for fresh-food estimates** (`AppleAI.swift`): the meal session
+  now takes a FoundationModels `Tool` — `NutritionLookupTool` (name
+  `lookupNutrition`) — that queries `NaturalFoodCatalog` for USDA-style per-100 g
+  values. The model's job is reduced to identifying the food + portion grams and
+  reporting `catalogMatch`; when it hit the catalog, **Swift recomputes**
+  kcal/protein/fat from per-100 g × grams via the new
+  `NaturalFoodCatalog.product(for:grams:portion:)` (see
+  `FoodAI.product(from:slot:)`), discarding the model's own numbers. Still **one
+  batched model call per meal**, and the deterministic catalog-first path stays
+  for exact matches.
+- **AI fallback for allergen matching** (`AppleAI.mapAllergens` +
+  `AllergenEngine.unmatchedIngredients` / `canonicalAllergens`): the synonym map
+  runs first; only ingredients it can't place at all (e.g. "hydrolyzed poultry
+  by-product") go to the model in one batched call that maps them to the ten
+  canonical allergens. Applied in the package path
+  (`FoodAI.withAISuggestedAllergens`) — discovered allergens are appended to the
+  product's ingredients as **advisory suggestions** the owner reviews/edits on
+  Confirm (safety-conservative: better to surface a flag than miss it).
+- **Plausibility guardrails** (`Plausibility` in `AIDraftService.swift`, pure
+  rules, no AI): after extraction, `Plausibility.check(_:combined:)` sanity-checks
+  the numbers — treat 1–150 kcal/piece, a cup of dry food ~250–550 kcal, dry food
+  ~3,000–4,500 kcal/kg, and a guaranteed-analysis mass/energy consistency check
+  (nutrient grams can't outweigh the serving mass estimated from calories;
+  protein·4 + fat·9 can't exceed the stated calories). Implausible fields are
+  flagged on Confirm in an **orange "…double-check" state** on the specific field
+  (Calories / Nutrition rows, plus a ⚠︎ marker on implausible meal items) —
+  **never silently accepted or auto-corrected**, and the Continue gate is
+  unaffected. DEBUG deep-link `MILO_CONFIRM_SAMPLE=implausible` seeds a sample
+  that trips the guardrails for screenshot verification.
+- **Verified (simulator, iPhone 17 Pro):** Confirm renders the orange guardrail
+  state on the implausible sample (both Calories and Nutrition flagged) and shows
+  no false positives on the normal sample; Fresh composer + capture entry points
+  still render. The Foundation Models / iOS 26 Vision document paths need real
+  Apple Intelligence hardware to exercise end-to-end — on the sim they degrade to
+  the catalog + plain OCR + manual fill, as designed.
 
 ### 3.9c Trustworthy-core UX pass — same day
 - **Daily reset:** all day-math (ring, treats %, nutrient rings, Today list,
