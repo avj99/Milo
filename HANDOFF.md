@@ -1,6 +1,6 @@
 # Milo — Engineering Handoff
 
-_Last updated: 2026-07-22_
+_Last updated: 2026-07-29_
 
 Milo is a native iOS (SwiftUI) app that helps households track everything their
 dogs eat — meals, treats, human add-ins — to manage calories and catch
@@ -8,7 +8,7 @@ allergens. Camera-first in concept; AI drafts an entry, the owner confirms.
 Deliberately **not** medical/veterinary — it tracks intake and flags
 "discuss with your vet."
 
-- **Repo:** `~/Documents/Milo` (git initialised; **not yet pushed to GitHub** — see Pending)
+- **Repo:** `~/Documents/Documents - Avnish’s MacBook Air/Milo` (git initialised; **not yet pushed to GitHub** — see Pending)
 - **Xcode project:** `Milo.xcodeproj` — Xcode 26.6, SwiftUI, iOS 17 deployment target, bundle id `com.milo.app`, objectVersion 77 (synchronized folder groups, so new files under `Milo/` are auto-included).
 - **Supabase project:** `Milo`, ref **`lxkjhflvxrygtzmjrhqh`**, org TrustPacketAI, us-east-1. Dashboard: https://supabase.com/dashboard/project/lxkjhflvxrygtzmjrhqh
 
@@ -50,8 +50,9 @@ Milo/
   Milo.entitlements        Sign in with Apple capability
   Assets.xcassets          AppIcon (dog+bowl logo), AccentColor, MiloLogo
   Views/
-    RootView.swift         Tab bar + FAB + toast + nav
+    RootView.swift         Tab bar (Home · Fridge · FAB · Trends) + toast + nav
     HomeView.swift         Dog list
+    FridgeView.swift       My Fridge — household food DB, grouped by category
     DashboardView.swift    Calorie ring, live activity, today's log
     HouseholdView.swift    Members, invite code
     CaptureFlow.swift      Scan/Photo/Manual capture coordinator
@@ -61,12 +62,22 @@ Milo/
     OnboardingView.swift   12-step first-run flow (SwiftUI port of the DC design)
     OnboardingModel.swift  Onboarding state + mapping to Dog
     Components.swift        Shared UI (chips, rings, buttons, flow layout)
+  Capture/
+    CameraViews.swift        Camera/photo-library picker (PhotoCaptureView)
+    LabelOCR.swift           Vision OCR + no-AI fallback draft
+    AppleAI.swift            Apple Foundation Models: label draft + batch meal estimate
+    NaturalFoodCatalog.swift ~28 natural foods, USDA-style per-100g + portion grams
+    AIDraftService.swift     FoodAI: photos/meals → Product drafts (on-device pipeline)
   Supabase/
     SupabaseConfig.swift   Project URL + publishable key
     SupabaseService.swift  Client, DTOs, auth, queries, realtime (#if canImport(Supabase))
+    CloudStore.swift       SupabaseStore adapter: DTO↔model mapping + CloudSync engine
     AppleSignIn.swift       ASAuthorizationController coordinator (nonce + SHA256)
     README-supabase.md      SDK/auth setup steps
-supabase/migrations/       0001 schema, 0002 RLS, 0003 RPCs + realtime (SQL)
+supabase/migrations/       0001 schema, 0002 RLS, 0003 RPCs + realtime,
+                           0004 member-update policy + 6-char invite codes (SQL)
+supabase/functions/
+  product-draft/index.ts   Edge function: photo → Claude vision → structured draft
 ```
 
 ---
@@ -156,7 +167,107 @@ Allergens → animated calorie **Reveal** → Invite → Done.
   household/dog/log queries, realtime channel) compiles against the real SDK and
   the app builds/runs with it linked. Still behind `#if canImport(Supabase)`.
 
-### 3.8 Git
+### 3.8 SupabaseStore adapter (cloud sync) — added 2026-07-29
+- `Supabase/CloudStore.swift`: `CloudMap` (DTO ↔ `Dog`/`LogEntry`/`Member`/
+  `Product` mapping) + `CloudSync` engine owned by `AppStore`. Compiles to a
+  no-op stub without the SDK; app builds & runs either way.
+- **Sync model:** local-first optimistic writes; when signed in, every write
+  (create/join household, add dog, log product, rename user) is pushed on a
+  serial chain so ordering holds. Row ids are client-generated UUIDs shared by
+  local + cloud, so pushes are idempotent upserts and pulls reconcile cleanly.
+- **Bootstrap on auth:** cloud household exists → pull (cloud wins; local JSON
+  becomes the offline cache). Only local data exists → one-time migration push,
+  then re-pull. Signed out → local-only, exactly as before.
+- **Realtime:** subscribes to `log_entries`/`dogs`/`members` for the household;
+  events trigger a debounced re-pull (powers the shared "fed by" strip).
+- **Join is real now** (when signed in): `join_household` RPC resolves the code
+  and pulls the household's dogs/log over the local stub; bad code → toast.
+- **Invite codes are 6-char** (e.g. `4B29K7`) to match the designed UI — local
+  generator + server `gen_invite_code()` (migration 0004) + join input (now
+  accepts letters). Migration 0004 was applied to the live project 2026-07-29.
+- On cloud pull, `log` holds **today's** household entries (what the dashboard
+  shows); older history stays server-side for the future Trends screen.
+- Known quirk: the onboarding **Invite step still shows a placeholder code**
+  ("4B29K7" hardcoded) because the household is only created at "Start using
+  Milo". The real code is in the Household tab.
+
+### 3.9 On-device AI capture + nutrition pipeline — rebuilt 2026-07-29
+Product-decision reset (same day): **no barcode, no cloud AI — Apple-only.**
+Barcode scanning and the Claude edge-function path were removed from the app
+(the `product-draft` edge function is still deployed but dormant/unused; safe
+to delete). Architecture: **AI estimates, engine calculates.**
+- **Package capture (guided two-shot):** photo 1 = front of bag, photo 2 =
+  nutrition label (skippable). Both are OCR'd on-device (Apple Vision), then
+  **Apple Foundation Models** (iOS 26, `@Generable` guided generation) turns
+  the text into a structured `LabelDraft` — name/brand/category/serving/kcal +
+  the full **guaranteed analysis** (crude protein, fat, fiber, moisture %).
+  Percent→grams-per-serving conversion happens in Swift, not the model.
+- **Natural foods:** brand-less items ("shredded chicken", "1 breast",
+  "handful") via a meal composer. `NaturalFoodCatalog` (USDA-style per-100 g
+  values + colloquial-portion gram map) resolves common foods
+  deterministically; only unknowns go to the foundation model — **one batched
+  call per meal, never per item** (deliberate UX + efficiency rule).
+- **Meals:** the whole meal is composed first, estimated in one pass, shown as
+  an itemized Confirm card (combined allergy check across all ingredients),
+  then logged as one LogEntry per food per dog.
+- **Nutrition model:** `Product` now carries protein/fat/fiber/moisture grams
+  per portion (optional). `CalorieEngine.proteinTargetG/fatTargetG` scale
+  AAFCO per-1000-kcal minimums (adult 45/13.8 g, growth 56.3/21.3 g) by the
+  dog's calorie target. Dashboard gained a "Nutrition today" card (protein/fat
+  bars vs targets; fiber & moisture as info). Manual entry gained the four
+  guaranteed-analysis fields. Cloud `products` table gained the columns
+  (migration 0005, applied).
+- **Fallbacks:** no Apple Intelligence (device/OS) → OCR heuristics + catalog +
+  manual fill; unresolvable items surface as "fill in" on Confirm — the app
+  never invents numbers. Simulator-verified: Package panel + dashboard
+  nutrition card render; AAFCO targets compute correctly (1450 kcal → 65 g
+  protein / 20 g fat).
+
+### 3.9b My Fridge + categories + dedupe — same day
+- **My Fridge tab** (tab bar is now Home · Fridge · FAB · Trends): the
+  household's product database (backed by `favorites` locally / `products` in
+  the cloud), grouped by category, each row logs again in two taps (sheet →
+  AssignView), long-press → Remove from Fridge (cloud delete too). "Add food"
+  opens the capture flow; **Confirm gained a small "Add to Fridge" button** to
+  save without logging.
+- **Categories:** `FoodCategory` is now kibble / wet / treat / meat / fish /
+  vegetable / fruit / dairy / grain / supplement / other, with emoji + labels.
+  Legacy values decode via `FoodCategory(legacy:)` (meal→kibble, addIn→other);
+  DB check constraint relaxed accordingly (migration 0006, applied). Treat-%
+  now counts everything that isn't kibble/wet. Manual entry uses a scrollable
+  chip picker; catalog + AFM prompts categorize automatically.
+- **No duplicates, ever:** `upsertFridgeItem` merges by name+brand
+  (case-insensitive), keeping the existing id and the best-known nutrition;
+  `logProduct` canonicalizes through it, so re-capturing or re-logging the
+  same food reuses one product row locally and in the cloud.
+- **Nutrition rings:** the dashboard card now renders protein/fat as real
+  mini-rings (ProgressRing) vs AAFCO targets, fiber/moisture as chips.
+- **Package capture:** both photos are required; the CTA stays disabled until
+  front + nutrition label are both attached (no "front first" nagging).
+- Simulator-verified: Fridge tab (grouped, counts, tab bar), dashboard rings
+  (28/65 g protein, 14/20 g fat after a 380 kcal kibble log), live strip.
+
+### 3.9c Trustworthy-core UX pass — same day
+- **Daily reset:** all day-math (ring, treats %, nutrient rings, Today list,
+  live strip) counts TODAY's entries only via `todaysEntries(for:)`; history
+  stays in `log` for the future Trends screen. Verified: yesterday's 380 kcal
+  entry doesn't move today's ring.
+- **Confirm is actually editable:** tapping the product card (or any meal
+  item row) opens `ProductEditorSheet` — name/brand/category/kcal/portion/
+  guaranteed-analysis/ingredients, with a live allergen-chip preview; saves
+  keep the same product id (dedupe holds). Continue + Add-to-Fridge are
+  disabled until every item has calories ("fill in" gate).
+- **Delete a log entry:** long-press any Today row → Delete (syncs a cloud
+  delete; rings correct instantly).
+- **Allergy override friction:** logging to a hard-allergic dog now requires
+  a destructive confirmation dialog ("X is allergic to Y — Log anyway").
+- **Haptics** (`Haptics.swift`): success on log/fridge-save, warning on the
+  allergy dialog, light ticks on steppers and category chips.
+- Known polish still open: Dynamic Type/VoiceOver, dark mode, fractional
+  portions (needs `portionCount` Int→Double + column change), backdating,
+  Fridge search, dead Trends tab, custom camera UI.
+
+### 3.10 Git
 - Repo initialised; `.gitignore` excludes build output/DerivedData. Commits:
   `Initial commit` → `email auth + Supabase SDK` → `breed catalog + calorie
   engine`.
@@ -166,41 +277,49 @@ Allergens → animated calorie **Reveal** → Invite → Done.
 ## 4. What's PENDING
 
 **Backend / auth (blocking real cloud sync):**
-1. **Enable the Email provider** in Supabase → Auth → Sign In / Providers, and
+1. ~~Apply migration 0004~~ — **DONE 2026-07-29** (applied to
+   `lxkjhflvxrygtzmjrhqh`, verified: `gen_invite_code()` returns 6-char codes).
+2. **Enable the Email provider** in Supabase → Auth → Sign In / Providers, and
    turn **"Confirm email" OFF** for instant dev signups. (Currently email is
    off, so "Continue with email" will error.)
-2. **Configure the Apple provider** in Supabase (Service ID + key) for the Apple
+3. **Configure the Apple provider** in Supabase (Service ID + key) for the Apple
    sign-in round-trip to authenticate. Needs a paid Apple Developer account.
-3. **`SupabaseStore` adapter** — the app still reads/writes **local** JSON; the
-   Supabase client is linked but not yet the source of truth. Build an adapter
-   that maps DTOs ↔ `Dog`/`LogEntry`, does live reads/writes, and subscribes to
-   realtime, with local as an offline cache. (Steps in
-   `Milo/Supabase/README-supabase.md`.)
+4. **End-to-end cloud test** — the adapter (§3.8) is built and the app builds &
+   launches with it, but no live signup→onboard→log→realtime round-trip has
+   run yet (blocked on 1–2). Test with two simulators for the realtime strip.
 
 **Distribution:**
-4. **Push to GitHub** — `gh` CLI is not installed. Either `brew install gh &&
+5. **Push to GitHub** — `gh` CLI is not installed. Either `brew install gh &&
    gh auth login` then `gh repo create`, or create an empty repo and
    `git remote add origin … && git push -u origin main`.
-5. **Real signing/provisioning** for device builds + TestFlight (Apple Developer
+6. **Real signing/provisioning** for device builds + TestFlight (Apple Developer
    team, App IDs, capabilities).
 
 **Product (Phase 2+ from the build guide):**
-6. **Camera capture pipeline** — currently Scan/Photo produce a hardcoded demo
-   draft. Real work: VisionKit barcode scan, Apple Vision OCR, cloud AI vision
-   (photo → structured product draft + ingredient normalization).
-7. **Crowdsourced product database** — unverified→verified gate, moderation
+7. **Finish the on-device capture pipeline** (§3.9 built it). Remaining:
+   (a) test on a real Apple Intelligence device (iPhone 15 Pro+, iOS 26) —
+   Simulator on this Mac may run Foundation Models if Apple Intelligence is
+   enabled in macOS System Settings, otherwise the catalog/OCR fallback runs;
+   (b) make Confirm's fields actually editable in place (the ✎ affordance is
+   visual-only today — ManualEntryView is the workaround for corrections);
+   (c) run AI ingredient output through `AllergenEngine.normalize` at Confirm;
+   (d) delete the dormant `product-draft` edge function if the Apple-only
+   decision is final.
+8. **Crowdsourced product database** — unverified→verified gate, moderation
    queue, report/flag control (Apple UGC guideline 1.2), seed from Open Pet Food
    Facts.
-8. **Multi-dog + household realtime** — add-another-dog UI, invite/join over the
-   backend (join is a local stub today), live "fed by Mom, 4 min ago" via the
-   realtime channel.
-9. **Trends screen** (tab exists, not built), account deletion (App Store req),
-   privacy nutrition labels, "Data sources & licenses" screen.
-10. **Breed catalog depth** — expand beyond ~65 breeds; consider sex-specific
+9. **Multi-dog household UX** — add-another-dog UI; the backend join + realtime
+   "fed by Mom, 4 min ago" now exist via the adapter (§3.8), but the onboarding
+   Invite step still shows a placeholder code, and there's no in-app "add dog"
+   after onboarding.
+10. **Trends screen** (tab exists, not built — server keeps full log history
+    for it), account deletion (App Store req), privacy nutrition labels, "Data
+    sources & licenses" screen.
+11. **Breed catalog depth** — expand beyond ~65 breeds; consider sex-specific
     ranges; "recalculate as your puppy grows" reminders.
 
 **Housekeeping:**
-11. Remove/gate off the DEBUG launch hooks before release. Move the Supabase
+12. Remove/gate off the DEBUG launch hooks before release. Move the Supabase
     publishable key to an xcconfig if preferred (it's public/safe to ship as-is).
 
 ---
