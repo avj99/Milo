@@ -6,7 +6,7 @@ enum Route: Hashable {
     case household
 }
 
-enum RootTab { case home, fridge }
+enum RootTab { case home, fridge, trends }
 
 struct RootView: View {
     @EnvironmentObject var store: AppStore
@@ -29,6 +29,8 @@ struct RootView: View {
                 }
             case .fridge:
                 FridgeView(onAddFood: { captureItem = .scan })
+            case .trends:
+                TrendsView()
             }
 
             TabBar(selected: tab,
@@ -61,6 +63,8 @@ struct RootView: View {
             path = [.household]
         case "fridge":
             tab = .fridge
+        case "trends":
+            tab = .trends
         case "capture":
             captureItem = .scan
         case "manualform":
@@ -103,7 +107,7 @@ struct TabBar: View {
             .buttonStyle(PressStyle())
             .offset(y: -16)
             Spacer()
-            tab(icon: "chart.bar.fill", label: "Trends", on: false) {}
+            tab(icon: "chart.bar.fill", label: "Trends", on: selected == .trends) { onSelect(.trends) }
         }
         .padding(.horizontal, 30)
         .padding(.top, 14)
