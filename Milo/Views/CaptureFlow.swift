@@ -104,6 +104,18 @@ struct CaptureFlow: View {
         category: .treat, kcalPerUnit: 32, portionBasis: "piece",
         ingredients: ["chicken breast", "glycerin", "salt"], verified: false)
 
+    #if DEBUG
+    /// An intentionally implausible draft (as if OCR misread the guaranteed
+    /// analysis) — used to verify the Confirm plausibility guardrails render.
+    /// Reached via MILO_CONFIRM_SAMPLE=implausible.
+    static let implausibleDraft = Product(
+        name: "Salmon Dry Recipe", brand: "Northwood", emoji: "🥣",
+        category: .kibble, kcalPerUnit: 1500, portionBasis: "cup",
+        ingredients: ["salmon", "brown rice", "peas"], verified: false,
+        isEstimate: true, proteinGPerUnit: 300, fatGPerUnit: 120,
+        fiberGPerUnit: 8, moistureGPerUnit: 12)
+    #endif
+
     var body: some View {
         NavigationStack(path: $path) {
             CaptureView(model: model, path: $path, onClose: { dismiss() })
@@ -120,7 +132,13 @@ struct CaptureFlow: View {
         .environmentObject(model)
         .onAppear {
             if let step = initialStep, step != .scan {
-                model.prepare(product: Self.aiDraft, dogs: store.dogs, fromAIDraft: true)
+                var draft = Self.aiDraft
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["MILO_CONFIRM_SAMPLE"] == "implausible" {
+                    draft = Self.implausibleDraft
+                }
+                #endif
+                model.prepare(product: draft, dogs: store.dogs, fromAIDraft: true)
                 path = [step]
             }
         }

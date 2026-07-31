@@ -19,6 +19,13 @@ struct ConfirmView: View {
 
     private var product: Product { model.product ?? placeholder }
 
+    /// Pure-rules sanity check on the drafted numbers. For a composed meal the
+    /// top card is a synthesized total, so its weight-sum check is skipped —
+    /// per-item checks run on the individual foods instead.
+    private var plausibility: Plausibility.Result {
+        Plausibility.check(product, combined: model.items.count > 1)
+    }
+
     /// Can't continue while a food still has no calories — the owner fills it
     /// in (tap the item) rather than logging a silent zero.
     private var needsFillIn: Bool {
@@ -98,9 +105,10 @@ struct ConfirmView: View {
             }
             .padding(.bottom, 10)
 
-            field("Calories", "\(product.kcalPerUnit) kcal / \(product.portionBasis)")
+            field("Calories", "\(product.kcalPerUnit) kcal / \(product.portionBasis)",
+                  flag: plausibility.calories)
             Divider().overlay(Theme.line)
-            field("Nutrition", nutritionSummary)
+            field("Nutrition", nutritionSummary, flag: plausibility.nutrition)
             Divider().overlay(Theme.line)
             field("Main ingredients", product.ingredients.map { $0.capitalized }.joined(separator: ", "))
             Divider().overlay(Theme.line)
@@ -118,16 +126,33 @@ struct ConfirmView: View {
         }
     }
 
-    private func field(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label).font(.milo(13.5, .semibold)).foregroundStyle(Theme.muted)
-            Spacer()
-            HStack(spacing: 7) {
-                Text(value).font(.milo(13.5, .heavy)).foregroundStyle(Theme.ink)
-                    .multilineTextAlignment(.trailing)
-                Text("✎").font(.milo(12, .bold)).foregroundStyle(Theme.brand)
+    private func field(_ label: String, _ value: String, flag: String? = nil) -> some View {
+        VStack(alignment: .trailing, spacing: 7) {
+            HStack(alignment: .top) {
+                Text(label).font(.milo(13.5, .semibold)).foregroundStyle(Theme.muted)
+                Spacer()
+                HStack(spacing: 7) {
+                    if flag != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11)).foregroundStyle(Theme.accentDeep)
+                    }
+                    Text(value).font(.milo(13.5, .heavy))
+                        .foregroundStyle(flag == nil ? Theme.ink : Theme.accentDeep)
+                        .multilineTextAlignment(.trailing)
+                    Text("✎").font(.milo(12, .bold)).foregroundStyle(Theme.brand)
+                }
+                .frame(maxWidth: 210, alignment: .trailing)
             }
-            .frame(maxWidth: 210, alignment: .trailing)
+            // Orange "this looks off — double-check" note, never auto-corrected.
+            if let flag {
+                Text(flag)
+                    .font(.milo(11.5, .bold)).foregroundStyle(Theme.accentDeep)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 230, alignment: .trailing)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Theme.accentSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         }
         .padding(.vertical, 13)
     }
@@ -154,6 +179,7 @@ struct ConfirmView: View {
                     .padding(.leading, 4).padding(.bottom, 9)
                 VStack(spacing: 0) {
                     ForEach(Array(model.items.enumerated()), id: \.offset) { index, item in
+                        let itemFlag = Plausibility.check(item)
                         HStack(spacing: 11) {
                             Text(item.emoji).font(.system(size: 19))
                             VStack(alignment: .leading, spacing: 1) {
@@ -161,9 +187,14 @@ struct ConfirmView: View {
                                 Text(item.portionBasis).font(.milo(11, .bold)).foregroundStyle(Theme.muted)
                             }
                             Spacer(minLength: 0)
+                            if itemFlag.isFlagged {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 11)).foregroundStyle(Theme.accentDeep)
+                            }
                             Text(item.kcalPerUnit == 0 ? "fill in" : "\(item.isEstimate ? "~" : "")\(item.kcalPerUnit) kcal")
                                 .font(.milo(12.5, .heavy))
-                                .foregroundStyle(item.kcalPerUnit == 0 ? Theme.alert : Theme.brandDeep)
+                                .foregroundStyle(item.kcalPerUnit == 0 ? Theme.alert
+                                                 : itemFlag.isFlagged ? Theme.accentDeep : Theme.brandDeep)
                             Text("✎").font(.milo(12, .bold)).foregroundStyle(Theme.brand)
                         }
                         .padding(.vertical, 10)
