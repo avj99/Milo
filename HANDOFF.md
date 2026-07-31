@@ -8,7 +8,7 @@ allergens. Camera-first in concept; AI drafts an entry, the owner confirms.
 Deliberately **not** medical/veterinary — it tracks intake and flags
 "discuss with your vet."
 
-- **Repo:** `~/Documents/Documents - Avnish’s MacBook Air/Milo` (git initialised; **not yet pushed to GitHub** — see Pending)
+- **Repo:** `~/Documents/Documents - Avnish’s MacBook Air/Milo` — pushed to **github.com/avj99/Milo** (SSH remote, branch `master`)
 - **Xcode project:** `Milo.xcodeproj` — Xcode 26.6, SwiftUI, iOS 17 deployment target, bundle id `com.milo.app`, objectVersion 77 (synchronized folder groups, so new files under `Milo/` are auto-included).
 - **Supabase project:** `Milo`, ref **`lxkjhflvxrygtzmjrhqh`**, org TrustPacketAI, us-east-1. Dashboard: https://supabase.com/dashboard/project/lxkjhflvxrygtzmjrhqh
 
@@ -289,9 +289,8 @@ to delete). Architecture: **AI estimates, engine calculates.**
    run yet (blocked on 1–2). Test with two simulators for the realtime strip.
 
 **Distribution:**
-5. **Push to GitHub** — `gh` CLI is not installed. Either `brew install gh &&
-   gh auth login` then `gh repo create`, or create an empty repo and
-   `git remote add origin … && git push -u origin main`.
+5. ~~Push to GitHub~~ — done 2026-07-29: `github.com/avj99/Milo` via SSH
+   (key `~/.ssh/id_ed25519` on this Mac). Push after each session.
 6. **Real signing/provisioning** for device builds + TestFlight (Apple Developer
    team, App IDs, capabilities).
 
