@@ -45,12 +45,14 @@ Milo/
   Theme.swift              Design tokens (colors, type, radii) from the mockup
   Models.swift             Household → Member → Dog → Product → LogEntry (all Codable)
   Engine.swift             CalorieEngine (RER/MER + NRC puppy) + AllergenEngine
+  TrendsModel.swift        Date-bucketed aggregation over the FULL log (for Trends)
   BreedCatalog.swift       ~65-breed reference table (size + ideal weight ranges)
   Store.swift              AppStore (in-app state) + local JSON persistence
   Milo.entitlements        Sign in with Apple capability
   Assets.xcassets          AppIcon (dog+bowl logo), AccentColor, MiloLogo
   Views/
-    RootView.swift         Tab bar (Home · Fridge · FAB · Trends) + toast + nav
+    RootView.swift         Tab bar (Home · Fridge · FAB · Trends, all live) + toast + nav
+    TrendsView.swift       Trends screen (v1): calories vs target, treat creep, etc.
     HomeView.swift         Dog list
     FridgeView.swift       My Fridge — household food DB, grouped by category
     DashboardView.swift    Calorie ring, live activity, today's log
@@ -315,7 +317,54 @@ never does arithmetic). Everything is availability-gated with graceful fallback.
   portions (needs `portionCount` Int→Double + column change), backdating,
   Fridge search, dead Trends tab, custom camera UI.
 
-### 3.10 Git
+### 3.10 Trends screen (v1) — added 2026-07-31 (branch `trends-feature`)
+The dead "Trends" tab is now a real screen (`Milo/Views/TrendsView.swift`), wired
+into `RootView` exactly like Fridge (`RootTab.trends` + a live tab-bar button +
+`MILO_SCREEN=trends` deep-link). Read-only; **all math is deterministic Swift** in
+`Milo/TrendsModel.swift` — the store's `consumed()`/`entries()` helpers are
+today-only by design, so Trends does its own date-bucketed aggregation over the
+FULL `AppStore.log`. Dog switcher at the top (defaults to the first dog), 7D/30D/3M
+range picker. Sections:
+1. **Calories vs target** — Swift Charts bar chart of daily kcal with the dog's
+   `dailyTarget` as a dashed rule line; under/on-target bars in brand green,
+   over-target in accent amber. Headline: "N% of target, on average this week"
+   (mean over logged days only — a no-log day is a gap, not a zero).
+2. **Treat creep** — daily treats-% (same rule as `Store.treatPercent`:
+   non-kibble/wet ÷ total) as a line vs a 10% guideline rule.
+3. **Nutrition adequacy** — weekly-avg protein & fat grams vs the AAFCO targets
+   (`CalorieEngine.protein/fatTargetG`) as quiet met/under chips — the amber
+   "Below target" chip only shows when actually under.
+4. **Logging streak** — consecutive days with ≥1 entry (today-in-progress doesn't
+   break it: counts from yesterday if today isn't logged yet).
+5. **Who's feeding** — household split for the range from `loggedBy` (e.g. You
+   50% · Mom 50%).
+6. **Weekly digest (optional)** — 2–3 sentences from **Apple Foundation Models**,
+   availability-gated (`#if canImport(FoundationModels)` + `AppleAI.isAvailable`);
+   **the card is hidden entirely when the model is unavailable** (so it's absent on
+   the sim). Words-only, grounded: the model gets NO free numbers — it calls two
+   deterministic Swift tools, `getTrendStat` (retrieves precomputed
+   `TrendsModel.digestStatMap()` values) and `calculate` (exact arithmetic), so
+   every figure it prints comes from Swift. Same "AI estimates, engine calculates"
+   rule as capture, applied to prose.
+7. **Empty state** — under 3 logged days shows a friendly paw illustration +
+   "Trends appear after a few days of logging" + an "N of 3 days" chip.
+8. **Weight over time** — a designed dashed-border placeholder card ("Coming
+   soon"); weight tracking isn't built yet.
+- **DEBUG-only** `MILO_TRENDS_SCROLL=bottom` env jumps the scroll view to the
+  last card so verification screenshots can capture the lower sections (no swipe
+  tooling on the sim). Gated like the other `MILO_*` launch hooks.
+- **Verified (simulator, iPhone 17 Pro):** injected a 10-day, two-member snapshot
+  into `Library/Application Support/milo_store.json` (LogEntry.time encodes as
+  seconds since 2001-01-01) — every section renders: under/over bars + target line,
+  treat-creep crossing the 10% guide, Protein "Met" / Fat "Below target", 🐾 10-day
+  streak, 50/50 feeder split; and the empty state at 2 logged days. The digest card
+  needs real Apple Intelligence hardware to exercise (correctly hidden on the sim).
+- ⚠️ **Data note:** Trends reads full history from the LOCAL `log`. When signed in,
+  `CloudStore` currently pulls only *today's* entries (older history stays
+  server-side), so cloud-synced users will see thin/empty Trends until the pull
+  includes history — filed as a follow-up issue.
+
+### 3.11 Git
 - Repo initialised; `.gitignore` excludes build output/DerivedData. Commits:
   `Initial commit` → `email auth + Supabase SDK` → `breed catalog + calorie
   engine`.
@@ -359,9 +408,11 @@ never does arithmetic). Everything is availability-gated with graceful fallback.
    "fed by Mom, 4 min ago" now exist via the adapter (§3.8), but the onboarding
    Invite step still shows a placeholder code, and there's no in-app "add dog"
    after onboarding.
-10. **Trends screen** (tab exists, not built — server keeps full log history
-    for it), account deletion (App Store req), privacy nutrition labels, "Data
-    sources & licenses" screen.
+10. ~~Trends screen~~ — **v1 DONE 2026-07-31** on branch `trends-feature` (§3.10).
+    Follow-ups: pull full log history for signed-in users so cloud Trends aren't
+    thin (CloudStore pulls today-only today); exercise the AFM weekly digest on
+    real Apple Intelligence hardware. Still open here: account deletion (App Store
+    req), privacy nutrition labels, "Data sources & licenses" screen.
 11. **Breed catalog depth** — expand beyond ~65 breeds; consider sex-specific
     ranges; "recalculate as your puppy grows" reminders.
 
