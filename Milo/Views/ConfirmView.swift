@@ -3,10 +3,27 @@ import SwiftUI
 /// Confirm the AI-drafted product before it saves. The owner always sees and
 /// confirms what the AI read — this is the data-quality gate.
 struct ConfirmView: View {
+    @EnvironmentObject var store: AppStore
     @ObservedObject var model: CaptureModel
     @Binding var path: [CaptureStep]
+    /// Closes the whole capture flow after "Add to Fridge" (no logging).
+    var onAddedToFridge: (() -> Void)? = nil
+
+    /// Which draft is open in the editor (index into model.items).
+    private struct EditTarget: Identifiable {
+        let index: Int
+        let product: Product
+        var id: Int { index }
+    }
+    @State private var editing: EditTarget?
 
     private var product: Product { model.product ?? placeholder }
+
+    /// Can't continue while a food still has no calories — the owner fills it
+    /// in (tap the item) rather than logging a silent zero.
+    private var needsFillIn: Bool {
+        (model.items.isEmpty ? [product] : model.items).contains { $0.kcalPerUnit <= 0 }
+    }
 
     var body: some View {
         ZStack {
@@ -15,6 +32,7 @@ struct ConfirmView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     detectingBanner
                     productCard
+                    mealItemsCard
                     verifiedLine
                 }
                 .padding(.horizontal, 20)
@@ -24,6 +42,18 @@ struct ConfirmView: View {
         .navigationBarHidden(true)
         .safeAreaInset(edge: .top) { topBar }
         .safeAreaInset(edge: .bottom) { cta }
+        .sheet(item: $editing) { target in
+            ProductEditorSheet(product: target.product) { updated in
+                model.updateItem(at: target.index, with: updated)
+            }
+        }
+    }
+
+    /// Opens the editor for the single product, or a specific meal item.
+    private func edit(_ index: Int = 0) {
+        let items = model.items.isEmpty ? [product] : model.items
+        guard items.indices.contains(index) else { return }
+        editing = EditTarget(index: index, product: items[index])
     }
 
     private var topBar: some View {
@@ -38,7 +68,9 @@ struct ConfirmView: View {
 
     private var detectingBanner: some View {
         HStack(spacing: 8) {
-            Text("✨ AI read the label — check it looks right")
+            Text(model.items.count > 1
+                 ? "✨ Estimated in one pass — tap any food to fix it"
+                 : "✨ Check it looks right — tap the card to fix anything")
         }
         .font(.milo(12.5, .heavy))
         .foregroundStyle(Theme.accentDeep)
@@ -68,6 +100,8 @@ struct ConfirmView: View {
 
             field("Calories", "\(product.kcalPerUnit) kcal / \(product.portionBasis)")
             Divider().overlay(Theme.line)
+            field("Nutrition", nutritionSummary)
+            Divider().overlay(Theme.line)
             field("Main ingredients", product.ingredients.map { $0.capitalized }.joined(separator: ", "))
             Divider().overlay(Theme.line)
             field("Category", product.category.label)
@@ -77,6 +111,11 @@ struct ConfirmView: View {
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
             .strokeBorder(Theme.line, lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // The combined meal card isn't directly editable — its items are.
+            if model.items.count <= 1 { edit() }
+        }
     }
 
     private func field(_ label: String, _ value: String) -> some View {
@@ -93,6 +132,56 @@ struct ConfirmView: View {
         .padding(.vertical, 13)
     }
 
+    /// Guaranteed-analysis panel per portion — dashes where the label/estimate
+    /// had nothing, so the owner sees exactly what's missing to fill in.
+    private var nutritionSummary: String {
+        func fmt(_ v: Double?, _ tag: String) -> String {
+            guard let v, v > 0 else { return "– \(tag)" }
+            return "\(v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v))g \(tag)"
+        }
+        return [fmt(product.proteinGPerUnit, "protein"),
+                fmt(product.fatGPerUnit, "fat"),
+                fmt(product.fiberGPerUnit, "fiber"),
+                fmt(product.moistureGPerUnit, "moisture")].joined(separator: " · ")
+    }
+
+    /// For composed meals: the individual foods that will each get logged.
+    @ViewBuilder private var mealItemsCard: some View {
+        if model.items.count > 1 {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("IN THIS MEAL")
+                    .font(.milo(12, .heavy)).foregroundStyle(Theme.muted)
+                    .padding(.leading, 4).padding(.bottom, 9)
+                VStack(spacing: 0) {
+                    ForEach(Array(model.items.enumerated()), id: \.offset) { index, item in
+                        HStack(spacing: 11) {
+                            Text(item.emoji).font(.system(size: 19))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.name).font(.milo(13.5, .heavy)).foregroundStyle(Theme.ink)
+                                Text(item.portionBasis).font(.milo(11, .bold)).foregroundStyle(Theme.muted)
+                            }
+                            Spacer(minLength: 0)
+                            Text(item.kcalPerUnit == 0 ? "fill in" : "\(item.isEstimate ? "~" : "")\(item.kcalPerUnit) kcal")
+                                .font(.milo(12.5, .heavy))
+                                .foregroundStyle(item.kcalPerUnit == 0 ? Theme.alert : Theme.brandDeep)
+                            Text("✎").font(.milo(12, .bold)).foregroundStyle(Theme.brand)
+                        }
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                        .onTapGesture { edit(index) }
+                        if index < model.items.count - 1 { Divider().overlay(Theme.line) }
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 6)
+                .background(Theme.card)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Theme.line, lineWidth: 1))
+            }
+            .padding(.top, 16)
+        }
+    }
+
     @ViewBuilder private var verifiedLine: some View {
         if !product.verified {
             (Text("🔎 New to the database — saved as ")
@@ -107,10 +196,29 @@ struct ConfirmView: View {
 
     private var cta: some View {
         VStack(spacing: 9) {
-            PrimaryButton(title: "Continue to dogs", systemImage: "arrow.right") {
+            PrimaryButton(title: needsFillIn ? "Fill in the calories first" : "Continue to dogs",
+                          systemImage: needsFillIn ? nil : "arrow.right",
+                          enabled: !needsFillIn) {
                 path.append(.assign)
             }
-            Text("Next: choose who this goes to")
+            // Save for later without logging — it lands in My Fridge.
+            Button {
+                store.addToFridge(model.items.isEmpty ? [product] : model.items)
+                Haptics.success()
+                onAddedToFridge?()
+            } label: {
+                Label("Add to Fridge", systemImage: "refrigerator")
+                    .font(.milo(13, .heavy))
+                    .foregroundStyle(needsFillIn ? Theme.muted : Theme.brand)
+                    .padding(.vertical, 8).padding(.horizontal, 16)
+                    .background(Theme.card)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder((needsFillIn ? Theme.muted : Theme.brand).opacity(0.4), lineWidth: 1.2))
+            }
+            .buttonStyle(PressStyle())
+            .disabled(needsFillIn)
+            Text(needsFillIn ? "Tap the food marked “fill in” to add its calories"
+                             : "Next: choose who this goes to")
                 .font(.milo(11.5, .bold)).foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 20)

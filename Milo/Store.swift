@@ -17,10 +17,15 @@ final class AppStore: ObservableObject {
 
     @Published var toast: String? = nil
 
-    /// The signed-in user. A local stand-in until Supabase auth lands; persisted.
+    /// The signed-in user. Adopted from the cloud member row when signed in;
+    /// a local stand-in otherwise. Persisted.
     private(set) var you: Member
 
     private let persistence = LocalStore()
+
+    /// Cloud sync (Supabase). A no-op stub when the SDK isn't linked. Local
+    /// writes stay optimistic; this pushes them up and pulls the household in.
+    private var cloud: CloudSync?
 
     /// True once a household exists — drives whether onboarding shows.
     var isSetUp: Bool { household != nil }
@@ -40,33 +45,58 @@ final class AppStore: ObservableObject {
             self.members = [you]
             self.household = nil
         }
+        let cloud = CloudSync(store: self)
+        self.cloud = cloud
+        cloud.start()
     }
 
     // MARK: - Derived
+    //
+    // All daily numbers (ring, treats %, nutrients, the Today list) count
+    // TODAY's entries only — the targets are per-day, so the rings must reset
+    // at midnight. Older entries stay in `log` as history for Trends.
 
     func dog(_ id: UUID) -> Dog? { dogs.first { $0.id == id } }
 
+    private func todaysEntries(for dogID: UUID) -> [LogEntry] {
+        log.filter { $0.dogID == dogID && Calendar.current.isDateInToday($0.time) }
+    }
+
     func entries(for dogID: UUID) -> [LogEntry] {
-        log.filter { $0.dogID == dogID }.sorted { $0.time > $1.time }
+        todaysEntries(for: dogID).sorted { $0.time > $1.time }
     }
 
     func consumed(for dogID: UUID) -> Int {
-        log.filter { $0.dogID == dogID }.reduce(0) { $0 + $1.kcal }
+        todaysEntries(for: dogID).reduce(0) { $0 + $1.kcal }
     }
 
     func remaining(for dog: Dog) -> Int { dog.dailyTarget - consumed(for: dog.id) }
+
+    /// Grams of a nutrient logged today, via a Product key path. Missing
+    /// product data counts as 0, so totals under-report rather than invent.
+    func nutrientConsumedG(for dogID: UUID, _ keyPath: KeyPath<Product, Double?>) -> Int {
+        Int(todaysEntries(for: dogID)
+            .reduce(0.0) { $0 + ($1.product[keyPath: keyPath] ?? 0) * Double($1.portionCount) }
+            .rounded())
+    }
+
+    func proteinConsumedG(for dogID: UUID) -> Int { nutrientConsumedG(for: dogID, \.proteinGPerUnit) }
+    func fatConsumedG(for dogID: UUID) -> Int { nutrientConsumedG(for: dogID, \.fatGPerUnit) }
+    func fiberConsumedG(for dogID: UUID) -> Int { nutrientConsumedG(for: dogID, \.fiberGPerUnit) }
+    func moistureConsumedG(for dogID: UUID) -> Int { nutrientConsumedG(for: dogID, \.moistureGPerUnit) }
 
     func progress(for dog: Dog) -> Double {
         guard dog.dailyTarget > 0 else { return 0 }
         return Double(consumed(for: dog.id)) / Double(dog.dailyTarget)
     }
 
-    /// Share of today's calories that came from treats/add-ins.
+    /// Share of today's calories that came from treats/extras (anything that
+    /// isn't a planned meal — kibble or wet food).
     func treatPercent(for dogID: UUID) -> Int {
         let total = consumed(for: dogID)
         guard total > 0 else { return 0 }
-        let treats = log
-            .filter { $0.dogID == dogID && $0.product.category != .meal }
+        let treats = todaysEntries(for: dogID)
+            .filter { !$0.product.category.isMainMeal }
             .reduce(0) { $0 + $1.kcal }
         return Int((Double(treats) / Double(total) * 100).rounded())
     }
@@ -83,19 +113,23 @@ final class AppStore: ObservableObject {
             inviteCode: Self.generateInviteCode(),
             members: members)
         save()
+        cloud?.didCreateHousehold()   // server invite code replaces the local one
     }
 
-    /// Local stub — a real join needs the backend to resolve the code.
+    /// Optimistic local household; when signed in the cloud join resolves the
+    /// code and pulls the real household (name, members, dogs) over this stub.
     func joinHousehold(code: String) {
         household = Household(name: "Shared household",
                               inviteCode: code.uppercased(),
                               members: members)
         save()
+        cloud?.didJoinHousehold(code: code.uppercased())
     }
 
     func addOnboardedDog(_ dog: Dog) {
         dogs.append(dog)
         save()
+        cloud?.didAddDog(dog)
     }
 
     /// Sets the current user's display name (e.g. from Sign in with Apple).
@@ -105,6 +139,23 @@ final class AppStore: ObservableObject {
         you.name = clean
         you.initials = String(clean.prefix(1)).uppercased()
         if let i = members.firstIndex(where: { $0.isYou }) { members[i] = you }
+        save()
+        cloud?.didRenameUser(clean)
+    }
+
+    // MARK: - Cloud snapshot (CloudSync pull → store)
+
+    /// Adopts the cloud's view of the household wholesale. Row ids are shared
+    /// between local and cloud, so this also reconciles optimistic writes.
+    /// The log becomes today's household entries (what the dashboard shows).
+    func applyCloudSnapshot(household: Household, members: [Member],
+                            dogs: [Dog], favorites: [Product], log: [LogEntry]) {
+        self.household = household
+        self.members = members
+        if let me = members.first(where: { $0.isYou }) { self.you = me }
+        self.dogs = dogs
+        self.favorites = favorites
+        self.log = log
         save()
     }
 
@@ -116,17 +167,21 @@ final class AppStore: ObservableObject {
     func logProduct(_ product: Product,
                     to assignments: [(dog: Dog, portionCount: Int)],
                     by member: Member) {
+        // The fridge is the single source of products: logging the "same" food
+        // twice reuses the existing product id, so duplicates can't be created
+        // locally or in the cloud.
+        let canonical = upsertFridgeItem(product)
         var added: [LogEntry] = []
         for a in assignments {
-            let kcal = product.kcalPerUnit * a.portionCount
-            let flagged = AllergenEngine.hasHardFlag(for: a.dog, product: product)
+            let kcal = canonical.kcalPerUnit * a.portionCount
+            let flagged = AllergenEngine.hasHardFlag(for: a.dog, product: canonical)
             added.append(LogEntry(
-                dogID: a.dog.id, product: product, portionCount: a.portionCount,
+                dogID: a.dog.id, product: canonical, portionCount: a.portionCount,
                 time: Date(), loggedBy: member, kcal: kcal, flaggedAllergen: flagged))
         }
         log.append(contentsOf: added)
-        rememberFavorite(product)
         save()
+        cloud?.didLog(entries: added, product: canonical)
 
         let names = assignments.map(\.dog.name)
         let msg: String
@@ -138,13 +193,58 @@ final class AppStore: ObservableObject {
         showToast(msg)
     }
 
-    /// Keep a product in the reusable favourites list (dedup by name + brand).
-    func rememberFavorite(_ product: Product) {
-        let exists = favorites.contains {
-            $0.name.caseInsensitiveCompare(product.name) == .orderedSame && $0.brand == product.brand
+    // MARK: - My Fridge (the household's product database)
+
+    /// Insert-or-merge by name + brand (case-insensitive). A match keeps the
+    /// existing id and takes the newer details — never a duplicate row.
+    @discardableResult
+    func upsertFridgeItem(_ product: Product) -> Product {
+        if let i = favorites.firstIndex(where: {
+            $0.name.caseInsensitiveCompare(product.name) == .orderedSame
+                && $0.brand.caseInsensitiveCompare(product.brand) == .orderedSame
+        }) {
+            let merged = Product(
+                id: favorites[i].id,
+                name: product.name, brand: product.brand, emoji: product.emoji,
+                category: product.category, kcalPerUnit: product.kcalPerUnit,
+                portionBasis: product.portionBasis, ingredients: product.ingredients,
+                verified: product.verified, isEstimate: product.isEstimate,
+                proteinGPerUnit: product.proteinGPerUnit ?? favorites[i].proteinGPerUnit,
+                fatGPerUnit: product.fatGPerUnit ?? favorites[i].fatGPerUnit,
+                fiberGPerUnit: product.fiberGPerUnit ?? favorites[i].fiberGPerUnit,
+                moistureGPerUnit: product.moistureGPerUnit ?? favorites[i].moistureGPerUnit)
+            favorites[i] = merged
+            return merged
         }
-        guard !exists else { return }
         favorites.insert(product, at: 0)
+        return product
+    }
+
+    /// "Add to Fridge" without logging — saves the foods for later use.
+    func addToFridge(_ products: [Product]) {
+        let saved = products.map { upsertFridgeItem($0) }
+        save()
+        cloud?.didSaveProducts(saved)
+        showToast(saved.count == 1 ? "Added to My Fridge" : "\(saved.count) foods added to My Fridge")
+    }
+
+    func removeFromFridge(_ product: Product) {
+        favorites.removeAll { $0.id == product.id }
+        save()
+        cloud?.didDeleteProduct(product.id)
+    }
+
+    /// Back-compat name used by older call sites.
+    func rememberFavorite(_ product: Product) { upsertFridgeItem(product) }
+
+    /// Removes a mistaken log entry (and its cloud row) — the rings correct
+    /// themselves immediately.
+    func deleteLogEntry(_ id: UUID) {
+        guard log.contains(where: { $0.id == id }) else { return }
+        log.removeAll { $0.id == id }
+        save()
+        cloud?.didDeleteLogEntry(id)
+        showToast("Entry removed")
     }
 
     func showToast(_ text: String) {
@@ -156,7 +256,9 @@ final class AppStore: ObservableObject {
     }
 
     /// Wipes all local data and returns to a fresh, un-onboarded state.
+    /// Also signs out of the cloud so the next launch doesn't re-pull.
     func resetAll() {
+        cloud?.didReset()
         persistence.clear()
         let you = Member(name: "You", initials: "Y", palette: .you, isYou: true)
         self.you = you
@@ -175,9 +277,11 @@ final class AppStore: ObservableObject {
             dogs: dogs, log: log, favorites: favorites))
     }
 
+    /// 6-char code from an unambiguous alphabet — same format the backend's
+    /// `gen_invite_code()` issues, so local and cloud codes look identical.
     static func generateInviteCode() -> String {
         let alphabet = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
-        return "MILO-" + String((0..<4).map { _ in alphabet.randomElement()! })
+        return String((0..<6).map { _ in alphabet.randomElement()! })
     }
 }
 

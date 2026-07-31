@@ -13,14 +13,18 @@ struct ManualEntryView: View {
     @State private var emoji = "🥣"
     @State private var name = ""
     @State private var brand = ""
-    @State private var category: FoodCategory = .meal
+    @State private var category: FoodCategory = .kibble
     @State private var kcalText = ""
     @State private var portion = ""
+    @State private var proteinText = ""
+    @State private var fatText = ""
+    @State private var fiberText = ""
+    @State private var moistureText = ""
     @State private var ingredientsText = ""
     @State private var isEstimate = false
     @FocusState private var focus: Field?
 
-    private enum Field { case name, brand, kcal, portion, ingredients }
+    private enum Field { case name, brand, kcal, portion, protein, fat, fiber, moisture, ingredients }
 
     private let emojiOptions = ["🥣", "🍗", "🦴", "🍖", "🐟", "🥩", "🍚", "🥕", "🧀", "🥚"]
 
@@ -67,6 +71,24 @@ struct ManualEntryView: View {
                         }
                         labeled("Per portion") {
                             textField("e.g. ¾ cup", text: $portion, field: .portion)
+                        }
+                    }
+                    // Guaranteed-analysis panel, grams per portion — optional,
+                    // but it's what powers the protein/fat rings.
+                    HStack(alignment: .top, spacing: 12) {
+                        labeled("Protein (g)") {
+                            textField("optional", text: $proteinText, field: .protein, keyboard: .decimalPad)
+                        }
+                        labeled("Fat (g)") {
+                            textField("optional", text: $fatText, field: .fat, keyboard: .decimalPad)
+                        }
+                    }
+                    HStack(alignment: .top, spacing: 12) {
+                        labeled("Fiber (g)") {
+                            textField("optional", text: $fiberText, field: .fiber, keyboard: .decimalPad)
+                        }
+                        labeled("Moisture (g)") {
+                            textField("optional", text: $moistureText, field: .moisture, keyboard: .decimalPad)
                         }
                     }
                     labeled("Ingredients") {
@@ -125,20 +147,24 @@ struct ManualEntryView: View {
     }
 
     private var categorySegmented: some View {
-        HStack(spacing: 7) {
-            ForEach(FoodCategory.allCases) { c in
-                Text(c.label)
-                    .font(.milo(12.5, .heavy))
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(FoodCategory.allCases) { c in
+                    HStack(spacing: 5) {
+                        Text(c.emoji).font(.system(size: 13))
+                        Text(c.label).font(.milo(12.5, .heavy))
+                    }
                     .foregroundStyle(category == c ? Theme.brandDeep : Theme.muted)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 9).padding(.horizontal, 13)
                     .background(category == c ? Theme.card : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(category == c ? Theme.brand : .clear, lineWidth: 1.2))
                     .shadow(color: category == c ? Theme.brandDeep.opacity(0.15) : .clear, radius: 5, y: 3)
                     .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { category = c } }
+                }
             }
+            .padding(5)
         }
-        .padding(5)
         .background(Theme.track)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -177,15 +203,22 @@ struct ManualEntryView: View {
         VStack(spacing: 9) {
             PrimaryButton(title: "Continue to dogs", systemImage: canContinue ? "arrow.right" : nil,
                           enabled: canContinue) {
+                func grams(_ text: String) -> Double? {
+                    let v = Double(text.trimmingCharacters(in: .whitespaces)) ?? 0
+                    return v > 0 ? v : nil
+                }
                 let product = Product(
                     name: name.trimmingCharacters(in: .whitespaces),
-                    brand: brand.trimmingCharacters(in: .whitespaces).isEmpty
-                        ? "Manual entry" : brand.trimmingCharacters(in: .whitespaces),
+                    brand: brand.trimmingCharacters(in: .whitespaces),
                     emoji: emoji, category: category,
                     kcalPerUnit: kcal ?? 0,
                     portionBasis: portion.trimmingCharacters(in: .whitespaces),
                     ingredients: ingredients,
-                    verified: true, isEstimate: isEstimate)
+                    verified: true, isEstimate: isEstimate,
+                    proteinGPerUnit: grams(proteinText),
+                    fatGPerUnit: grams(fatText),
+                    fiberGPerUnit: grams(fiberText),
+                    moistureGPerUnit: grams(moistureText))
                 model.prepare(product: product, dogs: store.dogs, fromAIDraft: false)
                 path.append(.assign)
             }

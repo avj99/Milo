@@ -9,6 +9,7 @@ struct AssignView: View {
     @ObservedObject var model: CaptureModel
     var onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmAllergyOverride = false
 
     private var product: Product { model.product ?? placeholder }
 
@@ -81,11 +82,13 @@ struct AssignView: View {
         VStack(spacing: 9) {
             PrimaryButton(title: ctaTitle, systemImage: selectedDogs.isEmpty ? nil : "arrow.right",
                           enabled: !selectedDogs.isEmpty) {
-                let assignments = selectedDogs.map {
-                    (dog: $0, portionCount: model.portions[$0.id] ?? 1)
+                // Overriding a hard allergy must be a deliberate, second tap.
+                if allergicSelected.isEmpty {
+                    logNow()
+                } else {
+                    Haptics.warning()
+                    confirmAllergyOverride = true
                 }
-                store.logProduct(product, to: assignments, by: store.currentMember)
-                onDone()
             }
             Text(subText)
                 .font(.milo(11.5, .bold))
@@ -96,6 +99,37 @@ struct AssignView: View {
         .background(
             LinearGradient(colors: [Theme.bg.opacity(0), Theme.bg],
                            startPoint: .top, endPoint: .init(x: 0.5, y: 0.35)))
+        .confirmationDialog(allergyDialogTitle,
+                            isPresented: $confirmAllergyOverride,
+                            titleVisibility: .visible) {
+            Button("Log anyway", role: .destructive) { logNow() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This food lists an ingredient they react to. Milo will keep the entry flagged.")
+        }
+    }
+
+    private var allergyDialogTitle: String {
+        let names = allergicSelected.map(\.name)
+        let who = names.count == 1 ? names[0] : names.joined(separator: " & ")
+        let what = allergicSelected.first
+            .flatMap { dog in AllergenEngine.flags(for: dog, product: product).first?.canonical }
+            ?? "an allergen"
+        return "\(who) is allergic to \(what)"
+    }
+
+    /// One entry per food per dog — captured together, calculated together,
+    /// logged together.
+    private func logNow() {
+        let assignments = selectedDogs.map {
+            (dog: $0, portionCount: model.portions[$0.id] ?? 1)
+        }
+        let foods = model.items.isEmpty ? [product] : model.items
+        for food in foods {
+            store.logProduct(food, to: assignments, by: store.currentMember)
+        }
+        Haptics.success()
+        onDone()
     }
 
     private var ctaTitle: String {
@@ -195,6 +229,7 @@ struct AssignRow: View {
     private var stepper: some View {
         HStack(spacing: 0) {
             Button {
+                Haptics.tap()
                 model.portions[dog.id] = max(1, count - 1)
                 model.selection[dog.id] = true
             } label: { stepGlyph("−") }
@@ -202,6 +237,7 @@ struct AssignRow: View {
                 .font(.milo(12.5, .heavy)).foregroundStyle(Theme.ink)
                 .frame(minWidth: 58)
             Button {
+                Haptics.tap()
                 model.portions[dog.id] = min(12, count + 1)
                 model.selection[dog.id] = true
             } label: { stepGlyph("＋") }

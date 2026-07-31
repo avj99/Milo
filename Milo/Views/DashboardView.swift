@@ -20,6 +20,7 @@ struct DashboardView: View {
                         }
                         CalorieRing(dog: dog)
                         statRow(dog: dog)
+                        nutritionCard(dog: dog)
                         todaySection(dog: dog)
                     }
                     .padding(.horizontal, 20)
@@ -74,6 +75,68 @@ struct DashboardView: View {
         .miloCard(radius: 18, padding: 0)
     }
 
+    // MARK: Nutrition (guaranteed-analysis view of the day)
+    //
+    // Protein & fat get progress bars against AAFCO minimums scaled to this
+    // dog's calorie target (deterministic — see CalorieEngine). Fiber and
+    // moisture have no official daily minimum, so they inform, not gate.
+
+    private func nutritionCard(dog: Dog) -> some View {
+        let proteinTarget = CalorieEngine.proteinTargetG(for: dog)
+        let fatTarget = CalorieEngine.fatTargetG(for: dog)
+        let protein = store.proteinConsumedG(for: dogID)
+        let fat = store.fatConsumedG(for: dogID)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("NUTRITION TODAY").font(.milo(11, .heavy)).foregroundStyle(Theme.muted)
+                Spacer()
+                Text("vs AAFCO minimums")
+                    .font(.milo(9.5, .bold)).foregroundStyle(Theme.muted.opacity(0.8))
+            }
+            HStack(alignment: .top, spacing: 0) {
+                nutrientRing(label: "Protein", grams: protein, target: proteinTarget)
+                nutrientRing(label: "Fat", grams: fat, target: fatTarget)
+                VStack(alignment: .leading, spacing: 9) {
+                    infoChip("Fiber", "\(store.fiberConsumedG(for: dogID))g")
+                    infoChip("Moisture", "\(store.moistureConsumedG(for: dogID))g")
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(16)
+        .miloCard(radius: 20, padding: 0)
+        .padding(.top, 12)
+    }
+
+    private func nutrientRing(label: String, grams: Int, target: Int) -> some View {
+        let progress = target > 0 ? Double(grams) / Double(target) : 0
+        return VStack(spacing: 7) {
+            ZStack {
+                ProgressRing(progress: progress, lineWidth: 9, over: progress > 1.5)
+                VStack(spacing: 0) {
+                    Text("\(grams)").font(.milo(16, .heavy)).foregroundStyle(Theme.brandDeep)
+                    Text("g").font(.milo(9, .bold)).foregroundStyle(Theme.muted)
+                }
+            }
+            .frame(width: 64, height: 64)
+            Text(label.uppercased()).font(.milo(10, .heavy)).foregroundStyle(Theme.muted)
+            Text("of \(target)g").font(.milo(9.5, .bold)).foregroundStyle(Theme.muted.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func infoChip(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label.uppercased()).font(.milo(9.5, .heavy)).foregroundStyle(Theme.muted)
+            Text(value).font(.milo(14, .heavy)).foregroundStyle(Theme.brandDeep)
+        }
+        .padding(.vertical, 7).padding(.horizontal, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bg)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private func todaySection(dog: Dog) -> some View {
         VStack(spacing: 0) {
             SectionHeader(title: "Today") {
@@ -88,6 +151,15 @@ struct DashboardView: View {
 
             ForEach(store.entries(for: dogID)) { entry in
                 LogRow(entry: entry)
+                    .contextMenu {
+                        // Fat-fingered or the dog refused it — the rings
+                        // correct themselves as soon as it's gone.
+                        Button(role: .destructive) {
+                            store.deleteLogEntry(entry.id)
+                        } label: {
+                            Label("Delete entry", systemImage: "trash")
+                        }
+                    }
             }
         }
     }

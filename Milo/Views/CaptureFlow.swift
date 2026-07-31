@@ -1,8 +1,10 @@
 import SwiftUI
 
 // The "capture once → assign to many" pipeline, presented as a modal flow:
-//   Capture (Scan / Photo / Manual) → Confirm the AI draft → Assign to dogs.
-// Manual quick-log skips Confirm and goes straight to Assign.
+//   Capture (Package / Natural / Manual) → Confirm the draft → Assign to dogs.
+// Package = two guided photos (front + nutrition label) → OCR → on-device AI.
+// Natural = type the whole meal, then ONE batch estimate (catalog + AI) —
+// never a model call per item. Manual quick-log skips Confirm.
 
 enum CaptureStep: Hashable, Identifiable {
     case scan       // capture root
@@ -17,17 +19,73 @@ final class CaptureModel: ObservableObject {
     @Published var product: Product?
     @Published var fromAIDraft = false
 
+    /// The individual foods being logged. One entry for a single product;
+    /// several for a composed natural meal (each becomes its own LogEntry).
+    @Published var items: [Product] = []
+
     /// Per-dog selection + portion, keyed by dog id.
     @Published var selection: [UUID: Bool] = [:]
     @Published var portions: [UUID: Int] = [:]
 
     func prepare(product: Product, dogs: [Dog], fromAIDraft: Bool) {
         self.product = product
+        self.items = [product]
         self.fromAIDraft = fromAIDraft
         for d in dogs {
             selection[d.id] = true
             portions[d.id] = 1
         }
+    }
+
+    /// A composed meal: keeps every item for logging, and synthesizes a
+    /// combined product so Confirm/Assign can show totals and run the
+    /// per-dog allergy check across ALL ingredients at once.
+    func prepareMeal(_ products: [Product], dogs: [Dog]) {
+        guard !products.isEmpty else { return }
+        if products.count == 1 {
+            prepare(product: products[0], dogs: dogs, fromAIDraft: true)
+            return
+        }
+        product = Self.combined(from: products)
+        items = products
+        fromAIDraft = true
+        for d in dogs {
+            selection[d.id] = true
+            portions[d.id] = 1
+        }
+    }
+
+    /// Writes an edited draft back — single edits replace the product; meal
+    /// item edits recompute the combined totals.
+    func updateItem(at index: Int, with edited: Product) {
+        guard items.indices.contains(index) else {
+            product = edited
+            items = [edited]
+            return
+        }
+        items[index] = edited
+        product = items.count == 1 ? edited : Self.combined(from: items)
+    }
+
+    static func combined(from products: [Product]) -> Product {
+        func total(_ keyPath: KeyPath<Product, Double?>) -> Double? {
+            let values = products.compactMap { $0[keyPath: keyPath] }
+            return values.isEmpty ? nil : values.reduce(0, +)
+        }
+        return Product(
+            name: "Meal · \(products.count) foods",
+            brand: "",
+            emoji: "🍽️",
+            category: .other,
+            kcalPerUnit: products.reduce(0) { $0 + $1.kcalPerUnit },
+            portionBasis: "meal",
+            ingredients: Array(Set(products.flatMap(\.ingredients))),
+            verified: false,
+            isEstimate: products.contains(where: \.isEstimate),
+            proteinGPerUnit: total(\.proteinGPerUnit),
+            fatGPerUnit: total(\.fatGPerUnit),
+            fiberGPerUnit: total(\.fiberGPerUnit),
+            moistureGPerUnit: total(\.moistureGPerUnit))
     }
 }
 
@@ -40,7 +98,7 @@ struct CaptureFlow: View {
     /// Optional deep-link entry point (used for verification screenshots).
     var initialStep: CaptureStep? = nil
 
-    /// The AI-drafted product produced by scan/photo (unverified, trips Bella's allergy).
+    /// Sample draft for the DEBUG deep-link (screenshot verification only).
     static let aiDraft = Product(
         name: "Chicken Jerky Bites", brand: "Happy Tails", emoji: "🍗",
         category: .treat, kcalPerUnit: 32, portionBasis: "piece",
@@ -51,7 +109,8 @@ struct CaptureFlow: View {
             CaptureView(model: model, path: $path, onClose: { dismiss() })
                 .navigationDestination(for: CaptureStep.self) { step in
                     switch step {
-                    case .confirm:    ConfirmView(model: model, path: $path)
+                    case .confirm:    ConfirmView(model: model, path: $path,
+                                                  onAddedToFridge: { dismiss() })
                     case .manualForm: ManualEntryView(model: model, path: $path)
                     case .assign:     AssignView(model: model, onDone: { dismiss() })
                     case .scan:       EmptyView()
@@ -76,27 +135,69 @@ struct CaptureView: View {
     @Binding var path: [CaptureStep]
     var onClose: () -> Void
 
-    enum Mode: String, CaseIterable { case scan = "Scan", photo = "Photo", manual = "Manual" }
-    @State private var mode: Mode = .scan
+    enum Mode: String, CaseIterable { case package = "Package", natural = "Fresh", manual = "Manual" }
+    @State private var mode: Mode = .package
 
-    /// The AI-drafted product produced by scan/photo (unverified, trips Bella's allergy).
-    private var draft: Product { CaptureFlow.aiDraft }
+    // Package: the guided two-shot
+    private enum Shot { case front, back }
+    @State private var frontImage: UIImage?
+    @State private var backImage: UIImage?
+    @State private var pendingShot: Shot?
+
+    // Shared pipeline state
+    @State private var busy = false
+    @State private var busyLabel = ""
+    @State private var notice: String?
 
     var body: some View {
         ZStack {
             Theme.bg.ignoresSafeArea()
-            VStack(spacing: 0) {
-                segmented
-                switch mode {
-                case .scan:   scanPanel
-                case .photo:  photoPanel
-                case .manual: manualPanel
+            ScrollView {
+                VStack(spacing: 0) {
+                    segmented
+                    switch mode {
+                    case .package: packagePanel
+                    case .natural: naturalPanel
+                    case .manual:  manualPanel
+                    }
                 }
-                Spacer(minLength: 0)
+                .padding(.bottom, 40)
+            }
+            .scrollDismissesKeyboard(.interactively)
+
+            if busy {
+                Color.black.opacity(0.25).ignoresSafeArea()
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text(busyLabel).font(.milo(14, .bold)).foregroundStyle(.white)
+                }
+                .padding(24)
+                .background(Color(hex: 0x1B2B25, alpha: 0.9))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         }
         .navigationBarHidden(true)
         .safeAreaInset(edge: .top) { topBar }
+        .onAppear {
+            #if DEBUG
+            // Screenshot deep-link: MILO_CAPTURE_MODE=fresh|manual
+            switch ProcessInfo.processInfo.environment["MILO_CAPTURE_MODE"] {
+            case "fresh":  mode = .natural
+            case "manual": mode = .manual
+            default: break
+            }
+            #endif
+        }
+        .sheet(isPresented: Binding(get: { pendingShot != nil },
+                                    set: { if !$0 { pendingShot = nil } })) {
+            PhotoCaptureView { image in
+                if let image {
+                    if pendingShot == .front { frontImage = image } else { backImage = image }
+                }
+                pendingShot = nil
+            }
+            .ignoresSafeArea()
+        }
     }
 
     private var topBar: some View {
@@ -120,7 +221,7 @@ struct CaptureView: View {
                     .background(mode == m ? Theme.card : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .shadow(color: mode == m ? Theme.brandDeep.opacity(0.15) : .clear, radius: 6, y: 3)
-                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { mode = m } }
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { mode = m; notice = nil } }
             }
         }
         .padding(5)
@@ -129,39 +230,125 @@ struct CaptureView: View {
         .padding(.horizontal, 20).padding(.top, 8)
     }
 
-    // Scan / Photo share a viewfinder + shutter that draft via AI.
-    private var scanPanel: some View {
+    // MARK: Package — guided two-shot
+
+    private var packagePanel: some View {
         VStack(spacing: 0) {
-            Viewfinder(kind: .barcode)
-            Text("The AI reads the label and drafts the entry — you just confirm it on the next screen.")
+            shotCard(title: "Front of the bag",
+                     subtitle: "Name and brand",
+                     image: frontImage, icon: "🥡") { pendingShot = .front }
+            shotCard(title: "Nutrition label",
+                     subtitle: "Guaranteed analysis + ingredients",
+                     image: backImage, icon: "🏷️") { pendingShot = .back }
+
+            Text(PhotoCaptureView.hasCamera
+                 ? "Snap both sides in either order — the AI reads them together and drafts the entry for you to check."
+                 : "No camera here — pick label photos from the library instead.")
                 .captionStyle()
-            shutter
+
+            noticeView
+
+            PrimaryButton(title: "Read the label",
+                          systemImage: "sparkles",
+                          enabled: frontImage != nil && backImage != nil) {
+                handlePackage()
+            }
+            .padding(.horizontal, 20).padding(.top, 18)
         }
     }
 
-    private var photoPanel: some View {
-        VStack(spacing: 0) {
-            Viewfinder(kind: .label)
-            Text("Not in the database? A photo lets the AI fill in the name, calories and ingredients.")
-                .captionStyle()
-            shutter
-        }
-    }
-
-    private var shutter: some View {
-        Button {
-            model.prepare(product: draft, dogs: store.dogs, fromAIDraft: true)
-            path.append(.confirm)
-        } label: {
-            Circle()
-                .fill(.white)
-                .frame(width: 70, height: 70)
-                .overlay(Circle().strokeBorder(Theme.brand, lineWidth: 5))
-                .shadow(color: .black.opacity(0.2), radius: 8, y: 6)
+    private func shotCard(title: String, subtitle: String, image: UIImage?,
+                          icon: String, onTap: @escaping () -> Void) -> some View {
+        Button(action: onTap) {
+            HStack(spacing: 13) {
+                ZStack {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable().scaledToFill()
+                            .frame(width: 62, height: 62)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    } else {
+                        Text(icon).font(.system(size: 26))
+                            .frame(width: 62, height: 62)
+                            .background(Theme.track)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    if image != nil {
+                        Circle().fill(Theme.brand).frame(width: 22, height: 22)
+                            .overlay(Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white))
+                            .offset(x: 24, y: -24)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.milo(15, .heavy)).foregroundStyle(Theme.ink)
+                    Text(image == nil ? subtitle : "Tap to retake")
+                        .font(.milo(11.5, .bold)).foregroundStyle(Theme.muted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "camera.fill").font(.system(size: 16)).foregroundStyle(Theme.brand)
+            }
+            .padding(15)
+            .miloCard(radius: 20, padding: 0)
         }
         .buttonStyle(PressStyle())
-        .padding(.top, 18)
+        .padding(.horizontal, 20).padding(.top, 12)
     }
+
+    private func handlePackage() {
+        guard let frontImage, backImage != nil, !busy else { return }
+        busy = true; busyLabel = "Reading the label…"; notice = nil
+        Task {
+            defer { busy = false }
+            let draft = await FoodAI.draftPackagedProduct(front: frontImage, back: backImage)
+            if !draft.usedAI {
+                notice = "On-device AI isn't available here — drafted from the label text; check every field."
+            }
+            model.prepare(product: draft.product, dogs: store.dogs, fromAIDraft: true)
+            path.append(.confirm)
+        }
+    }
+
+    // MARK: Fresh — pick foods Milo knows, one estimate pass on continue
+
+    private var naturalPanel: some View {
+        VStack(spacing: 0) {
+            FreshFoodComposer { inputs in
+                handleNaturalMeal(inputs)
+            }
+            noticeView
+        }
+    }
+
+    private func handleNaturalMeal(_ inputs: [FoodAI.MealItemInput]) {
+        guard !busy, !inputs.isEmpty else { return }
+        busy = true; busyLabel = "Working out the numbers…"; notice = nil
+        Task {
+            defer { busy = false }
+            let products = await FoodAI.estimateMeal(inputs)
+            guard !products.isEmpty else {
+                notice = "Add at least one food."
+                return
+            }
+            if products.contains(where: { $0.kcalPerUnit == 0 }) {
+                notice = "A food couldn't be estimated — fill its calories on the next screen."
+            }
+            model.prepareMeal(products, dogs: store.dogs)
+            path.append(.confirm)
+        }
+    }
+
+    @ViewBuilder private var noticeView: some View {
+        if let notice {
+            Text(notice)
+                .font(.milo(12.5, .bold))
+                .foregroundStyle(Color(hex: 0xB4562E))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28).padding(.top, 10)
+        }
+    }
+
+    // MARK: Manual
 
     private var manualPanel: some View {
         VStack(spacing: 0) {
@@ -186,7 +373,7 @@ struct CaptureView: View {
                 .miloCard(radius: Theme.rPill, padding: 0)
             }
             .buttonStyle(PressStyle())
-            .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 6)
+            .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 6)
 
             HStack {
                 Text("YOUR FAVOURITES").font(.milo(12, .heavy)).foregroundStyle(Theme.muted)
@@ -203,58 +390,6 @@ struct CaptureView: View {
             Text("Quick-log the things you feed every day in one tap — honest preset portions, no AI needed.")
                 .captionStyle()
         }
-    }
-}
-
-// MARK: - Viewfinder
-
-struct Viewfinder: View {
-    enum Kind { case barcode, label }
-    var kind: Kind
-
-    var body: some View {
-        ZStack {
-            LinearGradient(colors: [Color(hex: 0x20302A), Color(hex: 0x0F1A15)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-            switch kind {
-            case .barcode:
-                VStack(spacing: 14) {
-                    Text("▊▍▉▍▊▎▉▍▊").font(.system(size: 40))
-                }
-                frameCorners
-                VStack {
-                    Spacer()
-                    Text("Line up the barcode on the bag or treat")
-                        .font(.milo(12.5, .bold)).foregroundStyle(Color(hex: 0xDCE7E0))
-                        .padding(.bottom, 20)
-                }
-            case .label:
-                VStack(spacing: 10) {
-                    Text("🏷️").font(.system(size: 48))
-                    Text("Fit the nutrition panel in frame")
-                        .font(.milo(12.5, .heavy)).foregroundStyle(Color(hex: 0xDCE7E0))
-                }
-                .frame(width: 240, height: 210)
-                .overlay(RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(Theme.accent.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6])))
-                VStack {
-                    Spacer()
-                    Text("A photo lets the AI fill it in")
-                        .font(.milo(12, .bold)).foregroundStyle(Color(hex: 0xDCE7E0))
-                        .padding(.bottom, 18)
-                }
-            }
-        }
-        .frame(height: 340)
-        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .padding(.horizontal, 20).padding(.top, 4)
-    }
-
-    private var frameCorners: some View {
-        RoundedRectangle(cornerRadius: 18)
-            .strokeBorder(Theme.accent, lineWidth: 3)
-            .frame(width: 210, height: 150)
-            .opacity(0.9)
     }
 }
 
@@ -295,13 +430,7 @@ struct FavoriteRow: View {
 
     private var favSubtitle: String {
         let kcal = product.isEstimate ? "~\(product.kcalPerUnit)" : "\(product.kcalPerUnit)"
-        let tag: String
-        switch product.category {
-        case .meal:  tag = "fed daily"
-        case .treat: tag = "treat"
-        case .addIn: tag = "human add-in"
-        }
-        return "\(product.portionBasis) · \(kcal) kcal · \(tag)"
+        return "\(product.portionBasis) · \(kcal) kcal · \(product.category.label.lowercased())"
     }
 }
 

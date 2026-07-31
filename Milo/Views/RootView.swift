@@ -6,24 +6,34 @@ enum Route: Hashable {
     case household
 }
 
+enum RootTab { case home, fridge }
+
 struct RootView: View {
     @EnvironmentObject var store: AppStore
     @State private var path: [Route] = []
     @State private var captureItem: CaptureStep?
+    @State private var tab: RootTab = .home
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            NavigationStack(path: $path) {
-                HomeView(path: $path)
-                    .navigationDestination(for: Route.self) { route in
-                        switch route {
-                        case .dashboard(let id): DashboardView(dogID: id, path: $path)
-                        case .household:         HouseholdView()
+            switch tab {
+            case .home:
+                NavigationStack(path: $path) {
+                    HomeView(path: $path)
+                        .navigationDestination(for: Route.self) { route in
+                            switch route {
+                            case .dashboard(let id): DashboardView(dogID: id, path: $path)
+                            case .household:         HouseholdView()
+                            }
                         }
-                    }
+                }
+            case .fridge:
+                FridgeView(onAddFood: { captureItem = .scan })
             }
 
-            TabBar(onAdd: { captureItem = .scan })
+            TabBar(selected: tab,
+                   onSelect: { tab = $0 },
+                   onAdd: { captureItem = .scan })
         }
         .fullScreenCover(item: $captureItem) { step in
             CaptureFlow(initialStep: step)
@@ -49,6 +59,8 @@ struct RootView: View {
             if let first = store.dogs.first { path = [.dashboard(first.id)] }
         case "household":
             path = [.household]
+        case "fridge":
+            tab = .fridge
         case "capture":
             captureItem = .scan
         case "manualform":
@@ -67,11 +79,15 @@ struct RootView: View {
 // MARK: - Bottom tab bar with the central FAB
 
 struct TabBar: View {
+    var selected: RootTab
+    var onSelect: (RootTab) -> Void
     var onAdd: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
-            tab(icon: "house.fill", label: "Home", on: true)
+            tab(icon: "house.fill", label: "Home", on: selected == .home) { onSelect(.home) }
+            Spacer()
+            tab(icon: "refrigerator.fill", label: "Fridge", on: selected == .fridge) { onSelect(.fridge) }
             Spacer()
             Button(action: onAdd) {
                 Image(systemName: "plus")
@@ -87,9 +103,9 @@ struct TabBar: View {
             .buttonStyle(PressStyle())
             .offset(y: -16)
             Spacer()
-            tab(icon: "chart.bar.fill", label: "Trends", on: false)
+            tab(icon: "chart.bar.fill", label: "Trends", on: false) {}
         }
-        .padding(.horizontal, 44)
+        .padding(.horizontal, 30)
         .padding(.top, 14)
         .frame(height: 92, alignment: .top)
         .background(
@@ -100,12 +116,15 @@ struct TabBar: View {
         .ignoresSafeArea(edges: .bottom)
     }
 
-    private func tab(icon: String, label: String, on: Bool) -> some View {
-        VStack(spacing: 3) {
-            Image(systemName: icon).font(.system(size: 20))
-            Text(label).font(.milo(10, .heavy))
+    private func tab(icon: String, label: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 20))
+                Text(label).font(.milo(10, .heavy))
+            }
+            .foregroundStyle(on ? Theme.brand : Theme.muted)
+            .frame(width: 56)
         }
-        .foregroundStyle(on ? Theme.brand : Theme.muted)
-        .frame(width: 60)
+        .buttonStyle(PressStyle())
     }
 }
