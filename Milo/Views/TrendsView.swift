@@ -11,15 +11,23 @@ struct TrendsView: View {
 
     @State private var selectedDogID: UUID?
     @State private var range: TrendsModel.Range = .week
+    /// The on-device AI note. nil = nothing to show (unavailable or not yet
+    /// loaded); the card is hidden whenever this is nil.
     @State private var digest: String?
-    @State private var digestState: DigestState = .idle
-
-    enum DigestState { case idle, loading, ready, unavailable }
 
     /// The dog in focus — the explicit selection, else the first dog.
     private var dog: Dog? {
         if let id = selectedDogID, let d = store.dog(id) { return d }
         return store.dogs.first
+    }
+
+    /// Re-key the digest so it regenerates when the focused dog changes OR a new
+    /// entry lands for that dog — keeping its numbers in step with the live cards
+    /// without re-running inference on unrelated state changes.
+    private var digestKey: String {
+        guard let dog else { return "none" }
+        let entries = store.log.reduce(0) { $0 + ($1.dogID == dog.id ? 1 : 0) }
+        return "\(dog.id.uuidString)-\(entries)"
     }
 
     var body: some View {
@@ -32,7 +40,7 @@ struct TrendsView: View {
             }
         }
         .safeAreaInset(edge: .top) { topBar }
-        .task(id: dog?.id) { await loadDigest() }
+        .task(id: digestKey) { await loadDigest() }
     }
 
     // MARK: Top bar
@@ -57,9 +65,6 @@ struct TrendsView: View {
     @ViewBuilder
     private func content(for dog: Dog) -> some View {
         let model = TrendsModel(log: store.log, dog: dog, range: range)
-        // "This week" stats are anchored to a literal 7-day window so the
-        // headline and adequacy chips stay stable as the chart range changes.
-        let week = TrendsModel(log: store.log, dog: dog, range: .week)
 
         ScrollViewReader { proxy in
             ScrollView {
@@ -67,6 +72,10 @@ struct TrendsView: View {
                     if store.dogs.count > 1 { dogSwitcher }
 
                     if model.hasEnoughData {
+                        // "This week" stats use a literal 7-day window so the
+                        // headline and adequacy chips stay stable as the chart
+                        // range changes.
+                        let week = TrendsModel(log: store.log, dog: dog, range: .week)
                         rangePicker
                         CaloriesCard(model: model, week: week)
                         TreatCreepCard(model: model)
@@ -75,7 +84,7 @@ struct TrendsView: View {
                             StreakCard(streak: model.streak)
                             FeedersCard(feeders: model.feeders)
                         }
-                        digestCard(week: week)
+                        digestCard
                         WeightPlaceholderCard().id("bottom")
                     } else {
                         emptyState(model: model)
@@ -111,7 +120,7 @@ struct TrendsView: View {
                     let on = d.id == dog?.id
                     Button {
                         selectedDogID = d.id
-                        digest = nil; digestState = .idle
+                        digest = nil          // clear stale note; digestKey reload refills it
                     } label: {
                         HStack(spacing: 7) {
                             Text(d.emoji).font(.system(size: 15))
@@ -157,8 +166,8 @@ struct TrendsView: View {
     // MARK: Weekly digest card (hidden entirely unless the model produced text)
 
     @ViewBuilder
-    private func digestCard(week: TrendsModel) -> some View {
-        if digestState == .ready, let digest, !digest.isEmpty {
+    private var digestCard: some View {
+        if let digest, !digest.isEmpty {
             TrendCard(title: "Milo's weekly note", trailing: "on-device AI") {
                 HStack(alignment: .top, spacing: 11) {
                     Text("✨").font(.system(size: 20))
@@ -183,7 +192,7 @@ struct TrendsView: View {
                 .font(.milo(13, .semibold)).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
-            Text("\(model.totalLoggedDays) of 3 days logged so far")
+            Text("\(model.totalLoggedDays) of \(TrendsModel.minDaysForTrends) days logged so far")
                 .font(.milo(11.5, .heavy)).foregroundStyle(Theme.brand)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Theme.okChipBg).clipShape(Capsule())
@@ -208,22 +217,20 @@ struct TrendsView: View {
     // MARK: Digest loading (availability-gated; deterministic tools ground it)
 
     private func loadDigest() async {
-        guard let dog else { digestState = .unavailable; return }
+        guard let dog else { digest = nil; return }
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *), AppleAI.isAvailable {
-            digestState = .loading
             let week = TrendsModel(log: store.log, dog: dog, range: .week)
-            guard week.hasEnoughData else { digestState = .unavailable; return }
+            guard week.hasEnoughData else { digest = nil; return }
+            // On success replace the text; on a transient failure keep whatever
+            // was showing so the card doesn't flicker out mid-refresh.
             if let text = try? await AppleAI.weeklyDigest(model: week), !text.isEmpty {
                 digest = text
-                digestState = .ready
-            } else {
-                digestState = .unavailable
             }
             return
         }
         #endif
-        digestState = .unavailable
+        digest = nil
     }
 }
 
@@ -308,8 +315,8 @@ private struct CaloriesCard: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: xStride)) { value in
-                AxisValueLabel(format: xFormat)
+            AxisMarks(values: .stride(by: .day, count: model.range.axisStride)) { _ in
+                AxisValueLabel(format: model.range.axisLabel)
                     .font(.milo(9, .bold)).foregroundStyle(Theme.muted)
             }
         }
@@ -330,13 +337,6 @@ private struct CaloriesCard: View {
             Text(text).font(.milo(10, .bold)).foregroundStyle(Theme.muted)
         }
     }
-
-    private var xStride: Int {
-        switch model.range { case .week: return 1; case .month: return 5; case .quarter: return 15 }
-    }
-    private var xFormat: Date.FormatStyle {
-        model.range == .week ? .dateTime.weekday(.narrow) : .dateTime.day().month(.narrow)
-    }
 }
 
 // MARK: - 2. Treat creep
@@ -346,10 +346,12 @@ private struct TreatCreepCard: View {
 
     private var yMax: Int { max(20, (model.days.map(\.treatPercent).max() ?? 0) + 4) }
 
+    private var guideline: Int { TrendsModel.treatGuidelinePct }
+
     var body: some View {
         TrendCard(title: "Treat creep", trailing: "avg \(model.avgTreatPercent)%") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Share of daily calories from treats & extras, against the 10% guideline.")
+                Text("Share of daily calories from treats & extras, against the \(guideline)% guideline.")
                     .font(.milo(11.5, .semibold)).foregroundStyle(Theme.muted)
                 chart
             }
@@ -358,11 +360,11 @@ private struct TreatCreepCard: View {
 
     private var chart: some View {
         Chart {
-            RuleMark(y: .value("Guideline", 10))
+            RuleMark(y: .value("Guideline", guideline))
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
                 .foregroundStyle(Theme.accentDeep.opacity(0.55))
                 .annotation(position: .top, alignment: .trailing) {
-                    Text("10% guide").font(.milo(9, .heavy)).foregroundStyle(Theme.accentDeep)
+                    Text("\(guideline)% guide").font(.milo(9, .heavy)).foregroundStyle(Theme.accentDeep)
                 }
             ForEach(model.days.filter(\.hasData)) { day in
                 LineMark(x: .value("Day", day.date, unit: .day),
@@ -373,7 +375,7 @@ private struct TreatCreepCard: View {
                 PointMark(x: .value("Day", day.date, unit: .day),
                           y: .value("Treats %", day.treatPercent))
                     .symbolSize(28)
-                    .foregroundStyle(day.treatPercent > 10 ? Theme.accent : Theme.brand)
+                    .foregroundStyle(day.treatPercent > guideline ? Theme.accent : Theme.brand)
             }
         }
         .chartYScale(domain: 0...yMax)
@@ -385,19 +387,12 @@ private struct TreatCreepCard: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: xStride)) { _ in
-                AxisValueLabel(format: xFormat)
+            AxisMarks(values: .stride(by: .day, count: model.range.axisStride)) { _ in
+                AxisValueLabel(format: model.range.axisLabel)
                     .font(.milo(9, .bold)).foregroundStyle(Theme.muted)
             }
         }
         .frame(height: 150)
-    }
-
-    private var xStride: Int {
-        switch model.range { case .week: return 1; case .month: return 5; case .quarter: return 15 }
-    }
-    private var xFormat: Date.FormatStyle {
-        model.range == .week ? .dateTime.weekday(.narrow) : .dateTime.day().month(.narrow)
     }
 }
 

@@ -30,7 +30,29 @@ struct TrendsModel {
             case .quarter: return 90
             }
         }
+        /// Spacing (in days) between chart x-axis labels for this range.
+        var axisStride: Int {
+            switch self {
+            case .week:    return 1
+            case .month:   return 5
+            case .quarter: return 15
+            }
+        }
+        /// x-axis label format: weekday initials for a week, day/month otherwise.
+        var axisLabel: Date.FormatStyle {
+            self == .week ? .dateTime.weekday(.narrow) : .dateTime.day().month(.narrow)
+        }
     }
+
+    // MARK: Guideline constants — single source of truth for text AND logic
+
+    /// Vet rule-of-thumb: treats/extras should stay under this share of a dog's
+    /// daily calories. Drives the guideline line, the copy, and the digest — so
+    /// the number can never disagree with itself across the UI.
+    static let treatGuidelinePct = 10
+    /// Distinct logged days required before Trends shows charts instead of the
+    /// "few days of logging" empty state.
+    static let minDaysForTrends = 3
 
     /// One calendar day of intake for the selected dog.
     struct Day: Identifiable {
@@ -198,7 +220,7 @@ struct TrendsModel {
 
     /// Fewer than ~3 days of history → the screen shows a friendly empty state
     /// instead of near-meaningless charts.
-    var hasEnoughData: Bool { totalLoggedDays >= 3 }
+    var hasEnoughData: Bool { totalLoggedDays >= Self.minDaysForTrends }
 
     // MARK: Digest source (words come from the model; every number is from here)
 
@@ -214,7 +236,7 @@ struct TrendsModel {
         s.append(("calorieTarget", "\(target) kcal per day"))
         s.append(("avgPercentOfTarget", avgPercentOfTargetThisWeek.map { "\($0)%" } ?? "not enough data"))
         s.append(("avgTreatPercent", "\(avgTreatPercent)%"))
-        s.append(("treatGuideline", "10% (aim to stay under)"))
+        s.append(("treatGuideline", "\(Self.treatGuidelinePct)% (aim to stay under)"))
         s.append(("avgProtein", "\(avgProteinGThisWeek) g per day"))
         s.append(("proteinTarget", "\(proteinTargetG) g per day"))
         s.append(("avgFat", "\(avgFatGThisWeek) g per day"))
