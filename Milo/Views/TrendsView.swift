@@ -79,7 +79,6 @@ struct TrendsView: View {
                         rangePicker
                         CaloriesCard(model: model, week: week)
                         TreatCreepCard(model: model)
-                        NutritionAdequacyCard(week: week)
                         HStack(spacing: 14) {
                             StreakCard(streak: model.streak)
                             FeedersCard(feeders: model.feeders)
@@ -286,7 +285,7 @@ private struct CaloriesCard: View {
                         .font(.milo(12.5, .bold)).foregroundStyle(Theme.muted)
                 }
             } else {
-                Text("Not enough logged days this week yet")
+                Text("Not enough completed days this week yet")
                     .font(.milo(13, .bold)).foregroundStyle(Theme.muted)
             }
         }
@@ -396,35 +395,7 @@ private struct TreatCreepCard: View {
     }
 }
 
-// MARK: - 3. Nutrition adequacy (quiet chips; prominent only when under)
-
-private struct NutritionAdequacyCard: View {
-    let week: TrendsModel
-
-    var body: some View {
-        TrendCard(title: "Nutrition adequacy", trailing: "weekly avg vs AAFCO") {
-            VStack(spacing: 10) {
-                row(name: "Protein", avg: week.avgProteinGThisWeek, target: week.proteinTargetG)
-                row(name: "Fat", avg: week.avgFatGThisWeek, target: week.fatTargetG)
-            }
-        }
-    }
-
-    private func row(name: String, avg: Int, target: Int) -> some View {
-        let met = avg >= target
-        return HStack(spacing: 10) {
-            Text(name).font(.milo(13.5, .heavy)).foregroundStyle(Theme.ink)
-            Spacer()
-            Text("\(avg)g avg · \(target)g target")
-                .font(.milo(11.5, .bold)).foregroundStyle(Theme.muted)
-            Chip(text: met ? "Met" : "Below target",
-                 icon: met ? nil : "⚠",
-                 kind: met ? .ok : .soft)
-        }
-    }
-}
-
-// MARK: - 4. Logging streak
+// MARK: - 3. Logging streak
 
 private struct StreakCard: View {
     let streak: Int
@@ -444,7 +415,7 @@ private struct StreakCard: View {
     }
 }
 
-// MARK: - 5. Who's feeding
+// MARK: - 4. Who's feeding
 
 private struct FeedersCard: View {
     let feeders: [TrendsModel.FeederShare]
@@ -477,7 +448,7 @@ private struct FeedersCard: View {
     }
 }
 
-// MARK: - 8. Weight over time (placeholder — weight tracking isn't built yet)
+// MARK: - 5. Weight over time (placeholder — weight tracking isn't built yet)
 
 private struct WeightPlaceholderCard: View {
     var body: some View {

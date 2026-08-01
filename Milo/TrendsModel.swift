@@ -115,12 +115,15 @@ struct TrendsModel {
 
         let mine = log.filter { $0.dogID == dog.id }
         let today = cal.startOfDay(for: now)
+        // Trends is a record of COMPLETED days only — today (in progress) lives on
+        // the dog's dashboard rings, not here — so the window ends yesterday.
+        let lastDay = cal.date(byAdding: .day, value: -1, to: today) ?? today
 
-        // Build empty buckets for every day in the range, oldest first.
+        // Build empty buckets for every completed day in the range, oldest first.
         var buckets: [Date: Day] = [:]
         var ordered: [Date] = []
         for offset in stride(from: range.days - 1, through: 0, by: -1) {
-            guard let d = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
+            guard let d = cal.date(byAdding: .day, value: -offset, to: lastDay) else { continue }
             buckets[d] = Day(date: d, kcal: 0, treatKcal: 0, proteinG: 0, fatG: 0, entryCount: 0)
             ordered.append(d)
         }
@@ -138,21 +141,22 @@ struct TrendsModel {
         }
         self.days = ordered.compactMap { buckets[$0] }
 
-        // Feeder split over the range.
-        let rangeStart = ordered.first ?? today
-        let inRange = mine.filter { cal.startOfDay(for: $0.time) >= rangeStart }
+        // Feeder split over the range's completed days (today excluded via the set).
+        let dayset = Set(ordered)
+        let inRange = mine.filter { dayset.contains(cal.startOfDay(for: $0.time)) }
         var byMember: [UUID: (member: Member, count: Int)] = [:]
         for e in inRange {
             let existing = byMember[e.loggedBy.id]
             byMember[e.loggedBy.id] = (e.loggedBy, (existing?.count ?? 0) + 1)
         }
         let totalEntries = inRange.count
-        self.feeders = byMember.values
-            .map { FeederShare(member: $0.member, count: $0.count,
-                               percent: totalEntries > 0
-                                    ? Int((Double($0.count) / Double(totalEntries) * 100).rounded())
-                                    : 0) }
-            .sorted { $0.count > $1.count }
+        let ranked = byMember.values.sorted { $0.count > $1.count }
+        // Largest-remainder rounding so the shares always sum to exactly 100%
+        // (independent rounding can give 99% or 101% with 3+ feeders).
+        let pcts = Self.wholePercentages(ranked.map(\.count))
+        self.feeders = zip(ranked, pcts).map {
+            FeederShare(member: $0.0.member, count: $0.0.count, percent: $0.1)
+        }
 
         // Streak + total logged days over the FULL history for this dog.
         let loggedDays = Set(mine.map { cal.startOfDay(for: $0.time) })
@@ -176,15 +180,16 @@ struct TrendsModel {
 
     var target: Int { dog.dailyTarget }
 
-    /// Days in the range that actually have data (a gap isn't "ate nothing").
+    /// Completed days in the range that have data — a gap isn't "ate nothing".
+    /// (The window already excludes today, so every day here is finished.)
     private var loggedDaysInRange: [Day] { days.filter(\.hasData) }
 
-    /// The last 7 calendar days of the range that have data — the "this week"
-    /// window used for the headline and nutrition adequacy.
+    /// The last 7 completed days that have data — the "this week" window.
     private var thisWeek: [Day] { Array(loggedDaysInRange.suffix(7)) }
 
-    /// "Averaged N% of target this week" — mean of each logged day's kcal ÷
-    /// target, over the last 7 logged days. nil when there's nothing to average.
+    /// "Averaged N% of target this week" — mean of each completed day's kcal ÷
+    /// target, over the last 7 finished days. nil when there's nothing to average
+    /// yet (e.g. only today is logged).
     var avgPercentOfTargetThisWeek: Int? {
         guard target > 0, !thisWeek.isEmpty else { return nil }
         let mean = thisWeek.reduce(0.0) { $0 + Double($1.kcal) / Double(target) } / Double(thisWeek.count)
@@ -204,11 +209,28 @@ struct TrendsModel {
     var proteinTargetG: Int { CalorieEngine.proteinTargetG(for: dog) }
     var fatTargetG: Int { CalorieEngine.fatTargetG(for: dog) }
 
-    /// Average treats-% across logged days in the range.
+    /// Average treats-% across the range's completed days.
     var avgTreatPercent: Int {
         let logged = loggedDaysInRange
         guard !logged.isEmpty else { return 0 }
         return Int((logged.reduce(0.0) { $0 + Double($1.treatPercent) } / Double(logged.count)).rounded())
+    }
+
+    /// Whole-number percentages that sum to exactly 100 (largest-remainder).
+    static func wholePercentages(_ counts: [Int]) -> [Int] {
+        let total = counts.reduce(0, +)
+        guard total > 0 else { return counts.map { _ in 0 } }
+        let exact = counts.map { Double($0) / Double(total) * 100 }
+        var floors = exact.map { Int($0) }
+        var leftover = 100 - floors.reduce(0, +)
+        // Hand the leftover points to the largest fractional remainders first.
+        for i in exact.enumerated()
+            .sorted(by: { ($0.element - Double(Int($0.element))) > ($1.element - Double(Int($1.element))) })
+            .map(\.offset) where leftover > 0 {
+            floors[i] += 1
+            leftover -= 1
+        }
+        return floors
     }
 
     /// The upper bound for the calorie chart's y-axis — a little headroom above

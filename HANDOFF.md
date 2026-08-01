@@ -332,21 +332,26 @@ into `RootView` exactly like Fridge (`RootTab.trends` + a live tab-bar button +
 `Milo/TrendsModel.swift` — the store's `consumed()`/`entries()` helpers are
 today-only by design, so Trends does its own date-bucketed aggregation over the
 FULL `AppStore.log`. Dog switcher at the top (defaults to the first dog), 7D/30D/3M
-range picker. Sections:
+range picker.
+
+**Completed days only.** Trends is a record of finished days — the window ends
+*yesterday*, so today (in progress) never appears here (it lives on the dog's
+dashboard rings). This keeps a half-logged today from dragging every average down
+and is why the bar chart's last bar is yesterday, not today. One rule in the model
+(`lastDay = yesterday`) removes the partial-day skew from every stat at once.
+
+Sections:
 1. **Calories vs target** — Swift Charts bar chart of daily kcal with the dog's
    `dailyTarget` as a dashed rule line; under/on-target bars in brand green,
    over-target in accent amber. Headline: "N% of target, on average this week"
-   (mean over logged days only — a no-log day is a gap, not a zero).
+   (mean over the last 7 completed logged days — a no-log day is a gap, not a zero).
 2. **Treat creep** — daily treats-% (same rule as `Store.treatPercent`:
-   non-kibble/wet ÷ total) as a line vs a 10% guideline rule.
-3. **Nutrition adequacy** — weekly-avg protein & fat grams vs the AAFCO targets
-   (`CalorieEngine.protein/fatTargetG`) as quiet met/under chips — the amber
-   "Below target" chip only shows when actually under.
-4. **Logging streak** — consecutive days with ≥1 entry (today-in-progress doesn't
-   break it: counts from yesterday if today isn't logged yet).
-5. **Who's feeding** — household split for the range from `loggedBy` (e.g. You
-   50% · Mom 50%).
-6. **Weekly digest (optional)** — 2–3 sentences from **Apple Foundation Models**,
+   non-kibble/wet ÷ total) as a line vs the 10% guideline rule (`treatGuidelinePct`).
+3. **Logging streak** — consecutive days with ≥1 entry (today-in-progress doesn't
+   break it: counts from yesterday if today isn't logged yet); over full history.
+4. **Who's feeding** — household split for the range from `loggedBy`; percentages
+   use largest-remainder rounding so they always sum to 100%.
+5. **Weekly digest (optional)** — 2–3 sentences from **Apple Foundation Models**,
    availability-gated (`#if canImport(FoundationModels)` + `AppleAI.isAvailable`);
    **the card is hidden entirely when the model is unavailable** (so it's absent on
    the sim). Words-only, grounded: the model gets NO free numbers — it calls two
@@ -354,19 +359,24 @@ range picker. Sections:
    `TrendsModel.digestStatMap()` values) and `calculate` (exact arithmetic), so
    every figure it prints comes from Swift. Same "AI estimates, engine calculates"
    rule as capture, applied to prose.
-7. **Empty state** — under 3 logged days shows a friendly paw illustration +
-   "Trends appear after a few days of logging" + an "N of 3 days" chip.
-8. **Weight over time** — a designed dashed-border placeholder card ("Coming
+6. **Empty state** — under `minDaysForTrends` (3) logged days shows a friendly paw
+   illustration + "Trends appear after a few days of logging" + an "N of 3" chip.
+7. **Weight over time** — a designed dashed-border placeholder card ("Coming
    soon"); weight tracking isn't built yet.
+
+Removed after review: an earlier "Nutrition adequacy" (protein/fat vs AAFCO) card —
+weekly nutrient adequacy was cut from Trends to keep it focused; the per-day
+protein/fat rings still live on the dashboard. (`avgProteinGThisWeek` etc. remain
+in the model, now feeding only the weekly digest.)
 - **DEBUG-only** `MILO_TRENDS_SCROLL=bottom` env jumps the scroll view to the
   last card so verification screenshots can capture the lower sections (no swipe
   tooling on the sim). Gated like the other `MILO_*` launch hooks.
-- **Verified (simulator, iPhone 17 Pro):** injected a 10-day, two-member snapshot
-  into `Library/Application Support/milo_store.json` (LogEntry.time encodes as
-  seconds since 2001-01-01) — every section renders: under/over bars + target line,
-  treat-creep crossing the 10% guide, Protein "Met" / Fat "Below target", 🐾 10-day
-  streak, 50/50 feeder split; and the empty state at 2 logged days. The digest card
-  needs real Apple Intelligence hardware to exercise (correctly hidden on the sim).
+- **Verified (simulator, iPhone 17 Pro):** via `MILO_SCENARIO=demo` (§ debug hooks)
+  and an independent Python recompute of the seeded `milo_store.json` — every stat
+  ties out: 7 completed-day bars ending *yesterday* (today excluded), headline 109%
+  of target, treat-creep avg 2%, 🐾 10-day streak, feeders Mom 56% · You 44%
+  (sums to 100). The digest card needs real Apple Intelligence hardware to exercise
+  (correctly hidden on the sim).
 - ⚠️ **Data note:** Trends reads full history from the LOCAL `log`. When signed in,
   `CloudStore` currently pulls only *today's* entries (older history stays
   server-side), so cloud-synced users will see thin/empty Trends until the pull
