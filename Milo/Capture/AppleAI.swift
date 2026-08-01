@@ -299,15 +299,74 @@ enum AppleAI {
         }
     }
 
+    // MARK: Digest prompt (persona + a fixed, structured template)
+
+    /// Persona, grounding rules, and craft/tone — the fixed frame every note is
+    /// written inside. Kept deliberately tight so an on-device model stays on
+    /// voice: informative and polished, never gimmicky or clinical.
     private static let digestInstructions = """
-    You write a short weekly nutrition digest for a dog owner. You have two tools: \
-    getTrendStat retrieves precomputed statistics, and calculate does exact \
-    arithmetic. NEVER state a number you did not get back from one of those tools — \
-    do not estimate, recompute, or invent any figure. Write 2–3 warm, plain-language \
-    sentences. Be encouraging; if something sits above a guideline (e.g. treats over \
-    10%), mention it gently. This is intake tracking, not veterinary advice — never \
-    diagnose or give feeding prescriptions. Return the sentences only.
+    You are the writer of "This week" — a brief, polished nutrition note shown to a \
+    dog's owner inside a tracking app. Voice: a knowledgeable, encouraging coach — \
+    warm and human, quietly confident, never gushing, cutesy, or clinical. You are \
+    not a veterinarian: observe and encourage, never diagnose or prescribe.
+
+    GROUNDING — every number you state must come from a tool. Call getTrendStat to \
+    fetch a figure and calculate for any arithmetic. Never invent, estimate, or \
+    round a number yourself; fetch it before you write it.
+
+    CRAFT — 2 to 3 sentences, about 35–55 words. Lead with substance, not fanfare. \
+    Vary your openings and avoid clichés ("what a week", "pawsome"), exclamation \
+    marks, and filler. Favour one concrete specific over vague praise. The result \
+    should read cleanly and professionally — something an owner is glad to read.
+
+    Style references (a DIFFERENT dog — match the tone and shape, never the numbers):
+    • "Bella held steady this week, averaging 98% of her calorie target — right in \
+    the pocket. Treats stayed light at 6%, and an 11-day logging streak shows the \
+    routine is sticking. Keep dinners consistent and she'll stay in a good groove."
+    • "Cooper ran a little rich this week at 112% of target, with a couple of heavier \
+    days lifting the average. Treats were well in range at 4%, so the extra came from \
+    meals — easing portions slightly should bring him back to centre."
     """
+
+    /// The structured template: three labelled beats the model fills, plus a
+    /// Swift-chosen focus so the note leads with what actually mattered this week.
+    private static func digestPrompt(for m: TrendsModel) -> String {
+        """
+        Write this week's note for \(m.dog.name). Build it from these three beats \
+        (as flowing prose — no headings, labels, or bullets):
+
+        1. STANDING — open with how the week landed against the calorie target \
+        (getTrendStat "avgPercentOfTarget"); frame it gently as on-track, a touch \
+        over, or a touch under.
+        2. HIGHLIGHT — surface the single most noteworthy thing this week: \
+        \(focusHint(for: m)). State its exact number from the tool.
+        3. NEXT — close with one concrete, encouraging, non-medical suggestion for \
+        the week ahead.
+
+        First call getTrendStat with key "list" to see every stat, then fetch only \
+        the ones you use. Use calculate for any difference (e.g. points above the \
+        treats guideline). Print no number you didn't get from a tool. Return the \
+        note only.
+        """
+    }
+
+    /// Deterministic Swift pick of what the note should emphasise — steers the
+    /// model to the most relevant angle without leaking any figure into the prompt.
+    private static func focusHint(for m: TrendsModel) -> String {
+        if m.streak >= 7 {
+            return "the logging streak (getTrendStat \"loggingStreak\") — a strong, consistent routine worth crediting"
+        }
+        if m.avgTreatPercent > TrendsModel.treatGuidelinePct {
+            return "treats sitting above the \(TrendsModel.treatGuidelinePct)% guideline (getTrendStat \"avgTreatPercent\") — note it gently, as a nudge not an alarm"
+        }
+        if let p = m.avgPercentOfTargetThisWeek, p > 110 {
+            return "calories running over target (getTrendStat \"avgPercentOfTarget\") — flag it kindly and point toward easing portions"
+        }
+        if let p = m.avgPercentOfTargetThisWeek, p < 90 {
+            return "calories running under target (getTrendStat \"avgPercentOfTarget\") — a gentle check-in that meals may be light"
+        }
+        return "either the household feeding split (getTrendStat \"topFeeder\") or how steady the treats share stayed (getTrendStat \"avgTreatPercent\")"
+    }
 
     /// Two or three grounded sentences summarising the dog's week. Returns nil-safe
     /// text; callers hide the card entirely when the model is unavailable.
@@ -315,14 +374,7 @@ enum AppleAI {
         let session = LanguageModelSession(
             tools: [TrendsStatsTool(stats: model.digestStatMap()), TrendsCalculatorTool()],
             instructions: digestInstructions)
-        let prompt = """
-        Write this week's nutrition digest for \(model.dog.name). First call \
-        getTrendStat with key "list" to see every available statistic, then fetch \
-        each number you plan to mention. Use calculate for any arithmetic (for \
-        example how many points over or under the 10% treats guideline). Do not \
-        print a number you did not receive from a tool.
-        """
-        return try await session.respond(to: prompt).content
+        return try await session.respond(to: digestPrompt(for: model)).content
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

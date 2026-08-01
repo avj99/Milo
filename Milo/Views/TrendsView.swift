@@ -167,7 +167,7 @@ struct TrendsView: View {
     @ViewBuilder
     private var digestCard: some View {
         if let digest, !digest.isEmpty {
-            TrendCard(title: "Milo's weekly note", trailing: "on-device AI") {
+            TrendCard(title: "\(dog?.name ?? "This")'s week", trailing: "on-device AI") {
                 HStack(alignment: .top, spacing: 11) {
                     Text("✨").font(.system(size: 20))
                     Text(digest)
