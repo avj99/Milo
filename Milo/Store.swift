@@ -48,6 +48,14 @@ final class AppStore: ObservableObject {
         let cloud = CloudSync(store: self)
         self.cloud = cloud
         cloud.start()
+
+        #if DEBUG
+        // Scripted end-to-end demo data for verification (fridge → log →
+        // dashboard → trends). Only when launched with MILO_SCENARIO=demo.
+        if ProcessInfo.processInfo.environment["MILO_SCENARIO"] == "demo" {
+            DebugScenario.seedDemo(self)
+        }
+        #endif
     }
 
     // MARK: - Derived

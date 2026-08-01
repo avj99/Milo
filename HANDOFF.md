@@ -34,6 +34,14 @@ xcodebuild -project Milo.xcodeproj -scheme Milo \
 - `MILO_OB_STEP=<0–11>` — jump to an onboarding step with sample data.
 - `MILO_OB_FOCUS=dog|hh` — focus a text field (keyboard testing).
 - `MILO_OB_AGE=<months>` — set age to test the puppy calorie path.
+- `MILO_SCREEN=trends` — open the Trends tab; `MILO_TRENDS_SCROLL=bottom` also
+  jumps to the last card (for screenshotting the lower sections).
+- `MILO_SCENARIO=demo` — seed a full end-to-end demo on launch
+  (`DebugScenario.swift`): household + Milo + two foods added to My Fridge, 9
+  days of backdated history, and today's meal logged through the real
+  `addToFridge`/`logProduct` paths. Verifies fridge → log → dashboard → trends
+  all tie out (760 kcal today flows to the ring, today's log, and the Trends bar;
+  fridge dedupes to 2 rows; streak/feeders/nutrition compute). Reseeds each launch.
 
 ---
 
