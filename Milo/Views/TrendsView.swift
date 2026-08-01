@@ -41,6 +41,18 @@ struct TrendsView: View {
         }
         .safeAreaInset(edge: .top) { topBar }
         .task(id: digestKey) { await loadDigest() }
+        .onAppear(perform: debugPreselectDog)
+    }
+
+    /// DEBUG-only: preselect a dog by index (`MILO_TRENDS_DOG=1`) so the dog
+    /// switcher can be screenshotted on a second dog. No effect otherwise.
+    private func debugPreselectDog() {
+        #if DEBUG
+        if let raw = ProcessInfo.processInfo.environment["MILO_TRENDS_DOG"],
+           let i = Int(raw), store.dogs.indices.contains(i) {
+            selectedDogID = store.dogs[i].id
+        }
+        #endif
     }
 
     // MARK: Top bar

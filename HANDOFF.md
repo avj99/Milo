@@ -37,11 +37,14 @@ xcodebuild -project Milo.xcodeproj -scheme Milo \
 - `MILO_SCREEN=trends` — open the Trends tab; `MILO_TRENDS_SCROLL=bottom` also
   jumps to the last card (for screenshotting the lower sections).
 - `MILO_SCENARIO=demo` — seed a full end-to-end demo on launch
-  (`DebugScenario.swift`): household + Milo + two foods added to My Fridge, 9
-  days of backdated history, and today's meal logged through the real
-  `addToFridge`/`logProduct` paths. Verifies fridge → log → dashboard → trends
-  all tie out (760 kcal today flows to the ring, today's log, and the Trends bar;
-  fridge dedupes to 2 rows; streak/feeders/nutrition compute). Reseeds each launch.
+  (`DebugScenario.swift`): one household with **two dogs** (Milo + Luna), two foods
+  added to My Fridge, ~9 days of backdated history each, and today's meals logged
+  through the real `addToFridge`/`logProduct` paths. Verifies fridge → log →
+  dashboard → trends all tie out (today's kcal flows to the ring, today's log, and
+  the Trends bar; fridge dedupes to 2 rows; streak/feeders compute) and exercises
+  the multi-dog Trends switcher. Reseeds each launch.
+- `MILO_TRENDS_DOG=<index>` — on the Trends tab, preselect a dog by index so the
+  dog switcher (only shown with 2+ dogs) can be screenshotted on a second dog.
 
 ---
 
